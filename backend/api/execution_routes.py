@@ -4,9 +4,17 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
-from backend.config import EXECUTION_MODE, LIVE_EXECUTION_ENABLED
+from backend.config import (
+    EXECUTION_MODE,
+    LIVE_EXECUTION_ENABLED,
+    MAX_ORDER_NOTIONAL,
+    MAX_ORDER_SLIPPAGE_BPS,
+    SUPPORTED_EXECUTION_MARKETS,
+    SUPPORTED_EXECUTION_VENUES,
+    SUPPORTED_ORDER_TYPES,
+)
 from backend.core.event_bus import EventType
 from backend.core.state_store import StateStore
 from backend.core.schemas import ExecutionStatusResponse
@@ -31,11 +39,23 @@ class OrderRequest(BaseModel):
     side: str
     size: float
     price: float | None = None
+    order_type: str = "limit"
+    slippage_bps: float = 0.0
     client_order_id: str | None = None
     request_id: str | None = None
     strategy_id: str | None = None
     decision_id: str | None = None
     idempotency_key: str | None = None
+
+    @field_validator("venue", "side", "order_type", mode="before")
+    @classmethod
+    def _normalize_lower(cls, value):
+        return str(value).lower().strip()
+
+    @field_validator("market", mode="before")
+    @classmethod
+    def _normalize_market(cls, value):
+        return str(value).upper().strip()
 
 
 class ConditionalOrderRequest(BaseModel):
@@ -65,6 +85,40 @@ class SmartOrderRequest(BaseModel):
 
 
 _conditional_orders: dict[str, dict[str, Any]] = {}
+
+
+def _reject_order(code: str, message: str) -> None:
+    raise HTTPException(
+        status_code=400,
+        detail={"status": "error", "code": code, "message": message},
+    )
+
+
+def _validate_order_request(req: OrderRequest) -> None:
+    if req.venue not in SUPPORTED_EXECUTION_VENUES:
+        _reject_order("unsupported_venue", f"Unsupported execution venue '{req.venue}'")
+    if req.market not in SUPPORTED_EXECUTION_MARKETS:
+        _reject_order("unsupported_market", f"Unsupported execution market '{req.market}'")
+    if req.side not in ("buy", "sell"):
+        _reject_order("unsupported_side", f"Invalid side '{req.side}' — must be 'buy' or 'sell'")
+    if req.order_type not in SUPPORTED_ORDER_TYPES:
+        _reject_order("unsupported_order_type", f"Unsupported order type '{req.order_type}'")
+    if req.size <= 0:
+        _reject_order("invalid_size", "Order size must be greater than zero")
+    if req.price is not None and req.price <= 0:
+        _reject_order("invalid_price", "Order price must be greater than zero when provided")
+    if req.slippage_bps < 0 or req.slippage_bps > MAX_ORDER_SLIPPAGE_BPS:
+        _reject_order(
+            "invalid_slippage",
+            f"slippage_bps must be between 0 and {MAX_ORDER_SLIPPAGE_BPS}",
+        )
+    if req.price is not None:
+        notional = abs(req.size * req.price)
+        if notional > MAX_ORDER_NOTIONAL:
+            _reject_order(
+                "max_notional_exceeded",
+                f"Order notional {notional:.2f} exceeds maximum {MAX_ORDER_NOTIONAL:.2f}",
+            )
 
 
 def _latest_price(market: str, fallback: float | None = None) -> float | None:
@@ -113,22 +167,7 @@ class JupiterSwapRequest(BaseModel):
 @router.post("/order")
 def place_order(req: OrderRequest):
     try:
-        side = req.side.lower().strip()
-        if side not in ("buy", "sell"):
-            raise HTTPException(
-                status_code=400,
-                detail={"status": "error", "message": f"Invalid side '{req.side}' — must be 'buy' or 'sell'"},
-            )
-        if req.size <= 0:
-            raise HTTPException(
-                status_code=400,
-                detail={"status": "error", "message": "Order size must be greater than zero"},
-            )
-        if req.price is not None and req.price <= 0:
-            raise HTTPException(
-                status_code=400,
-                detail={"status": "error", "message": "Order price must be greater than zero when provided"},
-            )
+        _validate_order_request(req)
 
         request_id = req.request_id or str(uuid.uuid4())
         client_order_id = req.client_order_id or request_id
@@ -161,9 +200,11 @@ def place_order(req: OrderRequest):
                 **order_context,
                 "venue": req.venue,
                 "market": req.market,
-                "side": side,
+                "side": req.side,
                 "size": req.size,
                 "price": req.price,
+                "order_type": req.order_type,
+                "slippage_bps": req.slippage_bps,
                 "idempotency_status": idempotency_status,
             },
         )
@@ -171,9 +212,11 @@ def place_order(req: OrderRequest):
         result = _exec_router.route_order(
             venue=req.venue,
             market=req.market,
-            side=side,
+            side=req.side,
             size=req.size,
             price=req.price,
+            order_type=req.order_type,
+            slippage_bps=req.slippage_bps,
             order_context=order_context,
         )
         result["idempotency_status"] = idempotency_status
@@ -194,10 +237,10 @@ def place_order(req: OrderRequest):
             _positions_repo.save_paper_trade(
                 venue=req.venue,
                 market=req.market,
-                side=side,
+                side=req.side,
                 size=req.size,
                 price=fill_price,
-                order_type="limit",
+                order_type=req.order_type,
                 status=result.get("status", "unknown"),
             )
 
