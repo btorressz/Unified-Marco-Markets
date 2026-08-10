@@ -16,6 +16,7 @@ def create_app():
     @asynccontextmanager
     async def lifespan(application):
         from backend.data.db import init_db, close_pool
+        from backend.core.redis_runtime import close_redis_runtime
         from backend.ingest.scheduler import IngestScheduler
 
         scheduler = IngestScheduler()
@@ -39,6 +40,11 @@ def create_app():
                 scheduler.stop()
             except Exception:
                 logger.warning("Scheduler shutdown failed", exc_info=True)
+
+            try:
+                await close_redis_runtime()
+            except Exception:
+                logger.warning("Redis runtime shutdown failed", exc_info=True)
 
             close_pool()
 
@@ -151,4 +157,3 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", "5000"))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
