@@ -82,6 +82,10 @@ def run_backtest_endpoint(body: dict[str, Any] | None = None):
                 symbol=symbol,
                 market=market,
             )
+            if str(config.get("strategy", "")).lower().strip() == "recorded_orders":
+                # Recorded fills already carry their persisted fee/funding/slippage
+                # economics; applying funding_ticks again would double count them.
+                historical_data["funding_ticks"] = []
         except Exception as exc:
             logger.warning("Historical data load failed: %s", exc, exc_info=True)
             raise HTTPException(status_code=503, detail="Historical data store unavailable") from exc
