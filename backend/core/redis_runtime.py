@@ -292,9 +292,9 @@ def get_redis_runtime() -> RedisRuntime:
 
 
 async def close_redis_runtime() -> None:
-    global _default_runtime
-    with _default_runtime_lock:
-        runtime = _default_runtime
-        _default_runtime = None
+    # Keep the singleton object stable so existing StateStore/EventBus instances
+    # remain aligned during repeated lifespan cycles in tests. close() resets
+    # both pools, and the same runtime can lazily reconnect if the app restarts.
+    runtime = _default_runtime
     if runtime is not None:
         await runtime.close()
