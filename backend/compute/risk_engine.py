@@ -23,9 +23,10 @@ class RiskEngine:
         self.last_action_ts: float = 0.0
         self.daily_pnl: float = 0.0
         self.daily_pnl_reset_date: str = ""
-        self._last_portfolio_metrics: dict = {}
+        self.last_metrics: dict = {}
 
     def _exposure_delta(self, positions: list[dict], proposed_action: dict) -> tuple[float, float]:
+        """Return (reduce_quantity, increase_quantity) for the proposed order."""
         side = str(proposed_action.get("side", "")).lower()
         market = str(proposed_action.get("market", ""))
         venue = str(proposed_action.get("venue", ""))
@@ -50,43 +51,72 @@ class RiskEngine:
         return reduce_quantity > 0 and increase_quantity <= 1e-12
 
     @staticmethod
-    def _position_mark_price(position: dict) -> float:
-        return float(position.get("mark_price") or position.get("entry_price") or 0.0)
+    def _position_price(position: dict) -> float:
+        return abs(float(
+            position.get("mark_price")
+            or position.get("price")
+            or position.get("entry_price")
+            or 0.0
+        ))
 
     def build_portfolio_snapshot(
         self,
         positions: list[dict],
-        account_snapshot: dict | PortfolioSnapshot | None = None,
+        account: dict | PortfolioSnapshot | None = None,
+        open_orders: list[dict] | None = None,
     ) -> PortfolioSnapshot:
-        if isinstance(account_snapshot, PortfolioSnapshot):
-            base = account_snapshot.model_dump()
+        """Normalize account + exposure data into one risk snapshot.
+
+        Explicit account values win. Missing account funding fields fall back to
+        a compatibility-safe derived collateral value so legacy callers that
+        only pass positions continue to behave as before.
+        """
+        if isinstance(account, PortfolioSnapshot):
+            base = account.model_dump()
         else:
-            base = dict(account_snapshot or {})
+            base = dict(account or {})
 
         gross_exposure = 0.0
         net_exposure = 0.0
         margin_used = 0.0
-        unrealized_pnl = 0.0
+        unrealized_pnl = float(base.get("unrealized_pnl", 0.0) or 0.0)
         asset_exposure: dict[str, float] = {}
         venue_exposure: dict[str, float] = {}
         strategy_exposure: dict[str, float] = {}
 
-        for p in positions:
-            size = float(p.get("size", 0) or 0)
-            mark = self._position_mark_price(p)
-            notional = abs(size * mark)
-            signed_notional = size * mark
+        if "unrealized_pnl" not in base:
+            unrealized_pnl = 0.0
+
+        for position in positions:
+            size = float(position.get("size", 0.0) or 0.0)
+            price = self._position_price(position)
+            notional = abs(size * price)
+            signed_notional = size * price
+            market = str(position.get("market", "UNKNOWN"))
+            venue = str(position.get("venue", "unknown"))
+            strategy = str(position.get("strategy_id") or "unassigned")
+
             gross_exposure += notional
             net_exposure += signed_notional
-            margin_used += float(p.get("margin", 0) or 0)
-            unrealized_pnl += float(p.get("unrealized_pnl", p.get("pnl", 0)) or 0)
-
-            market = str(p.get("market", "UNKNOWN"))
-            venue = str(p.get("venue", "unknown"))
-            strategy = str(p.get("strategy_id", "unassigned"))
+            margin_used += float(position.get("margin", 0.0) or 0.0)
             asset_exposure[market] = asset_exposure.get(market, 0.0) + notional
             venue_exposure[venue] = venue_exposure.get(venue, 0.0) + notional
             strategy_exposure[strategy] = strategy_exposure.get(strategy, 0.0) + notional
+
+            if "unrealized_pnl" not in base:
+                unrealized_pnl += float(
+                    position.get("unrealized_pnl", position.get("pnl", 0.0)) or 0.0
+                )
+
+        open_order_exposure = float(base.get("open_order_exposure", 0.0) or 0.0)
+        if open_orders:
+            open_order_exposure = sum(
+                abs(
+                    float(order.get("size", 0.0) or 0.0)
+                    * float(order.get("price", 0.0) or 0.0)
+                )
+                for order in open_orders
+            )
 
         if "gross_exposure" in base:
             gross_exposure = float(base.get("gross_exposure") or 0.0)
@@ -94,24 +124,27 @@ class RiskEngine:
             net_exposure = float(base.get("net_exposure") or 0.0)
         if "margin_used" in base:
             margin_used = float(base.get("margin_used") or 0.0)
-        if "unrealized_pnl" in base:
-            unrealized_pnl = float(base.get("unrealized_pnl") or 0.0)
 
         cash = float(base.get("cash", 0.0) or 0.0)
         collateral = float(base.get("collateral", 0.0) or 0.0)
         realized_pnl = float(base.get("realized_pnl", 0.0) or 0.0)
-        maintenance_margin = float(base.get("maintenance_margin", 0.0) or 0.0)
-        open_order_exposure = float(base.get("open_order_exposure", 0.0) or 0.0)
-        available_buying_power = float(base.get("available_buying_power", 0.0) or 0.0)
 
-        equity = float(base.get("equity", 0.0) or 0.0)
-        if equity <= 0:
-            equity = cash + collateral + realized_pnl + unrealized_pnl
-        # Legacy position-only callers previously used margin as the denominator.
-        # Keep a bounded fallback rather than breaking those callers, while any
-        # supplied account snapshot uses true account equity.
-        if equity <= 0:
-            equity = margin_used if margin_used > 0 else 1.0
+        # Preserve legacy behavior only when no real account funding information
+        # exists. Once cash/collateral is provided, the engine uses true equity.
+        if cash == 0.0 and collateral == 0.0:
+            collateral = max(margin_used, 1.0)
+
+        equity = cash + collateral + realized_pnl + unrealized_pnl
+        available_buying_power = float(
+            base.get(
+                "available_buying_power",
+                max(equity * self.max_leverage - gross_exposure - open_order_exposure, 0.0),
+            )
+            or 0.0
+        )
+        maintenance_margin = float(
+            base.get("maintenance_margin", margin_used * 0.5) or 0.0
+        )
 
         return PortfolioSnapshot(
             cash=cash,
@@ -124,29 +157,35 @@ class RiskEngine:
             net_exposure=net_exposure,
             open_order_exposure=open_order_exposure,
             available_buying_power=available_buying_power,
-            equity=equity,
-            asset_exposure=base.get("asset_exposure") or asset_exposure,
-            venue_exposure=base.get("venue_exposure") or venue_exposure,
-            strategy_exposure=base.get("strategy_exposure") or strategy_exposure,
+            asset_exposure=dict(base.get("asset_exposure") or asset_exposure),
+            venue_exposure=dict(base.get("venue_exposure") or venue_exposure),
+            strategy_exposure=dict(base.get("strategy_exposure") or strategy_exposure),
         )
 
-    @staticmethod
-    def _max_concentration(exposure: dict[str, float], denominator: float) -> float:
-        if denominator <= 0 or not exposure:
-            return 0.0
-        return max(float(value or 0.0) for value in exposure.values()) / denominator
+    def calculate_metrics(self, snapshot: PortfolioSnapshot) -> dict:
+        equity = snapshot.equity
+        gross_with_orders = snapshot.gross_exposure + snapshot.open_order_exposure
 
-    def calculate_portfolio_metrics(self, snapshot: PortfolioSnapshot | dict) -> dict:
-        snap = snapshot if isinstance(snapshot, PortfolioSnapshot) else PortfolioSnapshot(**snapshot)
-        equity = snap.equity if snap.equity > 0 else 1.0
-        gross_with_orders = snap.gross_exposure + snap.open_order_exposure
-        gross_leverage = gross_with_orders / equity
-        net_leverage = abs(snap.net_exposure) / equity
-        margin_utilization = snap.margin_used / equity
-        asset_concentration = self._max_concentration(snap.asset_exposure, gross_with_orders)
-        venue_concentration = self._max_concentration(snap.venue_exposure, gross_with_orders)
-        strategy_concentration = self._max_concentration(snap.strategy_exposure, gross_with_orders)
-        liquidation_buffer = max(0.0, equity - snap.maintenance_margin)
+        gross_leverage = gross_with_orders / equity if equity > 0 else float("inf")
+        net_leverage = abs(snapshot.net_exposure) / equity if equity > 0 else float("inf")
+        margin_utilization = snapshot.margin_used / equity if equity > 0 else float("inf")
+
+        asset_concentration = (
+            max(snapshot.asset_exposure.values()) / snapshot.gross_exposure
+            if snapshot.gross_exposure > 0 and snapshot.asset_exposure
+            else 0.0
+        )
+        venue_concentration = (
+            max(snapshot.venue_exposure.values()) / snapshot.gross_exposure
+            if snapshot.gross_exposure > 0 and snapshot.venue_exposure
+            else 0.0
+        )
+        strategy_concentration = (
+            max(snapshot.strategy_exposure.values()) / snapshot.gross_exposure
+            if snapshot.gross_exposure > 0 and snapshot.strategy_exposure
+            else 0.0
+        )
+        liquidation_buffer = max(equity - snapshot.maintenance_margin, 0.0)
         liquidation_buffer_pct = liquidation_buffer / equity if equity > 0 else 0.0
 
         return {
@@ -159,10 +198,10 @@ class RiskEngine:
             "strategy_concentration": strategy_concentration,
             "liquidation_buffer": liquidation_buffer,
             "liquidation_buffer_pct": liquidation_buffer_pct,
-            "gross_exposure": snap.gross_exposure,
-            "net_exposure": snap.net_exposure,
-            "open_order_exposure": snap.open_order_exposure,
-            "available_buying_power": snap.available_buying_power,
+            "available_buying_power": snapshot.available_buying_power,
+            "gross_exposure": snapshot.gross_exposure,
+            "net_exposure": snapshot.net_exposure,
+            "open_order_exposure": snapshot.open_order_exposure,
         }
 
     def check_constraints(
@@ -181,19 +220,24 @@ class RiskEngine:
         if self.throttle_active and has_new_exposure:
             reasons.append(f"Throttle active: {self.throttle_reason}")
 
-        snapshot = self.build_portfolio_snapshot(positions, portfolio_snapshot)
+        snapshot = self.build_portfolio_snapshot(positions, account=portfolio_snapshot)
+        equity = snapshot.equity
         price = abs(float(proposed_action.get("price", 0) or 0))
         reduced_notional = reduce_quantity * price
         increased_notional = increase_quantity * price
-        projected_gross_exposure = max(0.0, snapshot.gross_exposure - reduced_notional) + increased_notional
-        projected_gross_with_orders = projected_gross_exposure + snapshot.open_order_exposure
-        projected_leverage = projected_gross_with_orders / snapshot.equity if snapshot.equity > 0 else 0.0
+        projected_gross = (
+            max(0.0, snapshot.gross_exposure - reduced_notional)
+            + increased_notional
+            + snapshot.open_order_exposure
+        )
+        projected_leverage = projected_gross / equity if equity > 0 else float("inf")
 
         if has_new_exposure and projected_leverage > self.max_leverage:
             reasons.append(
                 f"Leverage limit exceeded: projected {projected_leverage:.2f} > max {self.max_leverage:.2f}"
             )
 
+        projected_margin_usage = 0.0
         if has_new_exposure:
             requested_margin = proposed_action.get("margin")
             if requested_margin is None:
@@ -203,9 +247,13 @@ class RiskEngine:
                 increase_fraction = increase_quantity / full_order_size if full_order_size > 0 else 0.0
                 action_margin = float(requested_margin or 0) * increase_fraction
 
-            projected_margin_usage = (
-                (snapshot.margin_used + action_margin) / snapshot.equity if snapshot.equity > 0 else 0.0
+            released_margin = (
+                reduced_notional / self.max_leverage
+                if self.max_leverage > 0
+                else 0.0
             )
+            projected_margin = max(0.0, snapshot.margin_used - released_margin) + action_margin
+            projected_margin_usage = projected_margin / equity if equity > 0 else float("inf")
             if projected_margin_usage > self.max_margin_pct:
                 reasons.append(
                     f"Margin usage exceeded: projected {projected_margin_usage:.2%} > max {self.max_margin_pct:.2%}"
@@ -227,15 +275,10 @@ class RiskEngine:
                 remaining = self.cooldown_seconds - elapsed
                 reasons.append(f"Cooldown active: {remaining:.0f}s remaining")
 
-        projected_snapshot = snapshot.model_copy(
-            update={
-                "gross_exposure": projected_gross_exposure,
-                "margin_used": snapshot.margin_used + (
-                    action_margin if has_new_exposure else 0.0
-                ),
-            }
-        )
-        self._last_portfolio_metrics = self.calculate_portfolio_metrics(projected_snapshot)
+        self.last_metrics = self.calculate_metrics(snapshot) | {
+            "projected_gross_leverage": projected_leverage,
+            "projected_margin_utilization": projected_margin_usage,
+        }
 
         allowed = len(reasons) == 0
         if allowed and not is_pure_reduce:
@@ -267,6 +310,6 @@ class RiskEngine:
             "max_daily_loss": self.max_daily_loss,
             "cooldown_seconds": self.cooldown_seconds,
             "daily_pnl": self.daily_pnl,
-            "portfolio_metrics": self._last_portfolio_metrics,
+            "portfolio_metrics": self.last_metrics,
             "ts": datetime.now(timezone.utc).isoformat(),
         }
