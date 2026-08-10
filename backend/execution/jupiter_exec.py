@@ -3,29 +3,44 @@ from datetime import datetime, timezone
 
 import httpx
 
-from backend.config import JUPITER_API_URL, SOLANA_PRIVATE_KEY
+from backend.config import JUPITER_API_URL, SOLANA_PRIVATE_KEY, EXECUTION_MODE, LIVE_EXECUTION_ENABLED
 from backend.core.event_bus import EventBus, EventType
 
 logger = logging.getLogger(__name__)
 
 
 class JupiterExecutor:
+    """Research/prototype Jupiter execution adapter.
+
+    Quote/build functionality remains available when credentials permit, but
+    transaction submission is fail-closed until real signing is implemented.
+    """
+
+    production_ready = False
 
     def __init__(self, event_bus: EventBus | None = None):
         self.event_bus = event_bus or EventBus()
         self.api_url = JUPITER_API_URL or "https://api.jup.ag"
         self.private_key = SOLANA_PRIVATE_KEY
         self.enabled = bool(self.private_key)
+        self.execution_enabled = bool(
+            self.private_key
+            and EXECUTION_MODE == "live"
+            and LIVE_EXECUTION_ENABLED
+            and self.production_ready
+        )
 
         if not self.enabled:
             logger.warning("JupiterExecutor disabled: SOLANA_PRIVATE_KEY not set")
+        elif not self.execution_enabled:
+            logger.warning("Jupiter execution disabled: prototype adapter is not production-ready")
         else:
             logger.info("JupiterExecutor initialised")
 
     def _disabled_response(self, action: str) -> dict:
         return {
             "status": "error",
-            "reason": f"JupiterExecutor disabled (no SOLANA_PRIVATE_KEY) — cannot {action}",
+            "reason": f"JupiterExecutor disabled — cannot {action}",
         }
 
     def get_quote(
@@ -95,8 +110,11 @@ class JupiterExecutor:
             return {"status": "error", "reason": str(exc)}
 
     def execute_swap(self, swap_tx: dict) -> dict:
-        if not self.enabled:
-            return self._disabled_response("execute_swap")
+        if not self.execution_enabled:
+            return {
+                "status": "error",
+                "reason": "Jupiter live execution is prototype-only and transaction signing is not implemented",
+            }
 
         try:
             from backend.execution.solana_tx import SolanaTxHelper
@@ -110,6 +128,11 @@ class JupiterExecutor:
             import base64
             tx_bytes = base64.b64decode(tx_data)
             result = tx_helper.sign_and_send(tx_bytes)
+            if not result or result.startswith("error:"):
+                return {
+                    "status": "error",
+                    "reason": result or "Solana transaction submission failed without a signature",
+                }
 
             self.event_bus.emit(
                 EventType.SWAP_SENT,
@@ -117,10 +140,11 @@ class JupiterExecutor:
                 payload={"tx_signature": result, "swap_tx_keys": list(swap_tx.keys())},
             )
 
-            logger.info("Jupiter swap executed: %s", result)
+            logger.info("Jupiter swap submitted: %s", result)
             return {
-                "status": "ok",
+                "status": "submitted",
                 "tx_signature": result,
+                "requires_reconciliation": True,
                 "ts": datetime.now(timezone.utc).isoformat(),
             }
         except Exception as exc:
