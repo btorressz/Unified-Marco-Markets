@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from backend.core.event_bus import EventBus, EventType
 from backend.core.models import PositionState
+from backend.core.position_ledger import PositionLedger
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +13,10 @@ class PaperExecutor:
 
     def __init__(self, event_bus: EventBus | None = None):
         self.event_bus = event_bus or EventBus()
-        self._positions: dict[str, dict] = {}
+        self._ledger = PositionLedger()
+        # Compatibility alias for existing code/tests that inspect the in-memory
+        # position dictionary directly.
+        self._positions = self._ledger._positions
         self._orders: dict[str, dict] = {}
         self.enabled = True
         logger.info("PaperExecutor initialised (paper mode)")
@@ -26,6 +30,9 @@ class PaperExecutor:
         order_type: str = "limit",
         price: float | None = None,
         data_context: dict | None = None,
+        fee: float = 0.0,
+        funding: float = 0.0,
+        slippage: float = 0.0,
     ) -> dict:
         order_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
@@ -56,6 +63,17 @@ class PaperExecutor:
             },
         )
 
+        accounting = self._ledger.apply_fill(
+            venue=venue,
+            market=market,
+            side=side,
+            size=size,
+            price=fill_price,
+            fee=fee,
+            funding=funding,
+            slippage=slippage,
+        )
+
         self._orders[order_id] = {
             "order_id": order_id,
             "venue": venue,
@@ -67,9 +85,8 @@ class PaperExecutor:
             "status": "paper_filled",
             "fill_price": fill_price,
             "ts": now.isoformat(),
+            "accounting": accounting,
         }
-
-        self._update_position(venue, market, side, size, fill_price)
 
         self.event_bus.emit(
             EventType.ORDER_FILLED,
@@ -81,6 +98,12 @@ class PaperExecutor:
                 "side": side,
                 "size": size,
                 "fill_price": fill_price,
+                "realized_pnl": accounting["realized_pnl"],
+                "gross_realized_pnl": accounting["gross_realized_pnl"],
+                "unrealized_pnl": accounting["unrealized_pnl"],
+                "fees": accounting["fees"],
+                "funding": accounting["funding"],
+                "slippage": accounting["slippage"],
                 "tariff_ts": ctx.get("tariff_ts"),
                 "shock_ts": ctx.get("shock_ts"),
                 "price_ts": ctx.get("price_ts"),
@@ -107,6 +130,9 @@ class PaperExecutor:
             "market": market,
             "venue": venue,
             "size": size,
+            "realized_pnl": accounting["realized_pnl"],
+            "unrealized_pnl": accounting["unrealized_pnl"],
+            "accounting": accounting,
             "ts": now.isoformat(),
         }
 
@@ -120,7 +146,7 @@ class PaperExecutor:
 
     def get_positions(self) -> list[dict]:
         results = []
-        for key, pos in self._positions.items():
+        for pos in self._ledger.get_positions():
             size = pos["size"]
             side = "long" if size > 0 else "short"
             results.append(
@@ -129,42 +155,33 @@ class PaperExecutor:
                     market=pos["market"],
                     size=size,
                     entry_price=pos["entry_price"],
-                    pnl=pos.get("pnl", 0.0),
+                    pnl=pos.get("unrealized_pnl", 0.0),
                     margin=pos.get("margin", 0.0),
-                ).model_dump() | {"side": side}
+                ).model_dump()
+                | {
+                    "side": side,
+                    "mark_price": pos.get("mark_price", pos["entry_price"]),
+                    "realized_pnl": pos.get("realized_pnl", 0.0),
+                    "unrealized_pnl": pos.get("unrealized_pnl", 0.0),
+                    "fees": pos.get("fees", 0.0),
+                    "funding": pos.get("funding", 0.0),
+                    "slippage": pos.get("slippage", 0.0),
+                }
             )
         return results
 
+    def get_account_totals(self) -> dict:
+        return self._ledger.get_account_totals()
+
+    def mark_to_market(self, venue: str, market: str, mark_price: float) -> dict | None:
+        return self._ledger.mark_to_market(venue, market, mark_price)
+
     def _update_position(self, venue: str, market: str, side: str, size: float, price: float) -> None:
-        key = f"{venue}:{market}"
-        signed_size = size if side.lower() == "buy" else -size
-
-        if key in self._positions:
-            existing = self._positions[key]
-            old_size = existing["size"]
-            old_entry = existing["entry_price"]
-
-            new_size = old_size + signed_size
-
-            if abs(new_size) < 1e-12:
-                del self._positions[key]
-                return
-
-            if (old_size > 0 and signed_size > 0) or (old_size < 0 and signed_size < 0):
-                total_cost = abs(old_size) * old_entry + abs(signed_size) * price
-                new_entry = total_cost / abs(new_size) if abs(new_size) > 0 else price
-            else:
-                new_entry = old_entry if abs(new_size) >= abs(old_size) else price
-
-            existing["size"] = new_size
-            existing["entry_price"] = new_entry
-        else:
-            self._positions[key] = {
-                "venue": venue,
-                "market": market,
-                "size": signed_size,
-                "entry_price": price,
-                "pnl": 0.0,
-                "margin": 0.0,
-            }
-
+        """Compatibility shim for older internal tests/callers."""
+        self._ledger.apply_fill(
+            venue=venue,
+            market=market,
+            side=side,
+            size=size,
+            price=price,
+        )
