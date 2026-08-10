@@ -69,4 +69,5 @@ class CoinGeckoIngestor:
             venue=tick.venue,
             price=tick.price,
             confidence=tick.confidence,
+            ts=tick.ts,
         )
