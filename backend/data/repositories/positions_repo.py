@@ -99,12 +99,31 @@ class PositionsRepository:
             return None
 
     def get_paper_trades(self, limit: int = 50) -> list[dict]:
-        """Legacy compatibility reader for pre-PR #7 paper-trade history."""
+        """Return new normalized paper orders plus pre-PR #7 legacy history."""
         try:
-            return execute_query(
+            normalized = execute_query(
+                """SELECT
+                       po.id, o.venue, o.market, o.side, o.size,
+                       COALESCE(f.price, o.price, 0.0) AS price,
+                       o.order_type, po.status, po.created_at AS ts
+                   FROM paper_orders po
+                   JOIN orders o ON o.id = po.order_id
+                   LEFT JOIN fills f ON f.id = po.fill_id
+                   ORDER BY po.created_at DESC
+                   LIMIT %s""",
+                (limit,),
+            )
+        except Exception:
+            normalized = []
+
+        try:
+            legacy = execute_query(
                 "SELECT id, venue, market, side, size, price, order_type, status, ts FROM paper_trades ORDER BY ts DESC LIMIT %s",
                 (limit,),
             )
         except Exception:
-            logger.error("Failed to get paper trades", exc_info=True)
-            return []
+            legacy = []
+
+        combined = normalized + legacy
+        combined.sort(key=lambda row: row.get("ts") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        return combined[:limit]
