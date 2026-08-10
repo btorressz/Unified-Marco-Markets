@@ -1,19 +1,4 @@
-import subprocess
 import os
-import shutil
-import time
-
-if shutil.which("redis-server"):
-    try:
-        subprocess.run(
-            ["redis-server", "--daemonize", "yes", "--loglevel", "warning"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-        )
-        time.sleep(0.5)
-    except Exception:
-        pass
 
 from backend.logging_config import setup_logging, get_logger
 
@@ -30,27 +15,32 @@ def create_app():
 
     @asynccontextmanager
     async def lifespan(application):
-        from backend.data.db import init_db
-        try:
-            init_db()
-            logger.info("Database migrations applied")
-        except Exception as exc:
-            logger.warning("Database migration failed (non-fatal): %s", exc)
-
+        from backend.data.db import init_db, close_pool
         from backend.ingest.scheduler import IngestScheduler
+
         scheduler = IngestScheduler()
-        try:
-            scheduler.schedule_all()
-            logger.info("Ingest scheduler started")
-        except Exception as exc:
-            logger.warning("Scheduler start failed (non-fatal): %s", exc)
-
-        yield
 
         try:
-            scheduler.stop()
-        except Exception:
-            pass
+            try:
+                init_db()
+                logger.info("Database migrations applied")
+            except Exception as exc:
+                logger.warning("Database migration failed (non-fatal): %s", exc)
+
+            try:
+                scheduler.schedule_all()
+                logger.info("Ingest scheduler started")
+            except Exception as exc:
+                logger.warning("Scheduler start failed (non-fatal): %s", exc)
+
+            yield
+        finally:
+            try:
+                scheduler.stop()
+            except Exception:
+                logger.warning("Scheduler shutdown failed", exc_info=True)
+
+            close_pool()
 
     app = FastAPI(title="Tariff Risk Desk", version="0.1.0", lifespan=lifespan)
 
