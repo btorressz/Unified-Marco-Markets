@@ -75,6 +75,18 @@ class ExecutionStatusResponse(BaseModel):
     ts: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class RiskStatusResponse(BaseModel):
+    throttle_active: bool = False
+    throttle_reason: str = ""
+    current_leverage: float = 0.0
+    margin_usage: float = 0.0
+    daily_pnl: float = 0.0
+    max_leverage: float = 3.0
+    max_margin_usage: float = 0.6
+    max_daily_loss: float = 500.0
+    ts: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class PortfolioSnapshot(BaseModel):
     cash: float = 0.0
     collateral: float = 0.0
@@ -86,22 +98,13 @@ class PortfolioSnapshot(BaseModel):
     net_exposure: float = 0.0
     open_order_exposure: float = 0.0
     available_buying_power: float = 0.0
-    equity: float = 0.0
     asset_exposure: dict[str, float] = Field(default_factory=dict)
     venue_exposure: dict[str, float] = Field(default_factory=dict)
     strategy_exposure: dict[str, float] = Field(default_factory=dict)
 
-
-class RiskStatusResponse(BaseModel):
-    throttle_active: bool = False
-    throttle_reason: str = ""
-    current_leverage: float = 0.0
-    margin_usage: float = 0.0
-    daily_pnl: float = 0.0
-    max_leverage: float = 3.0
-    max_margin_usage: float = 0.6
-    max_daily_loss: float = 500.0
-    ts: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    @property
+    def equity(self) -> float:
+        return self.cash + self.collateral + self.realized_pnl + self.unrealized_pnl
 
 
 class StressTestResult(BaseModel):
