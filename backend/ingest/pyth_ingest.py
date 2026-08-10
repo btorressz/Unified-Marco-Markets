@@ -73,4 +73,5 @@ class PythIngestor:
             venue=tick.venue,
             price=tick.price,
             confidence=tick.confidence,
+            ts=tick.ts,
         )
