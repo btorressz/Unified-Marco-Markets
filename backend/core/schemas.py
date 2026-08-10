@@ -87,6 +87,26 @@ class RiskStatusResponse(BaseModel):
     ts: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class PortfolioSnapshot(BaseModel):
+    cash: float = 0.0
+    collateral: float = 0.0
+    realized_pnl: float = 0.0
+    unrealized_pnl: float = 0.0
+    margin_used: float = 0.0
+    maintenance_margin: float = 0.0
+    gross_exposure: float = 0.0
+    net_exposure: float = 0.0
+    open_order_exposure: float = 0.0
+    available_buying_power: float = 0.0
+    asset_exposure: dict[str, float] = Field(default_factory=dict)
+    venue_exposure: dict[str, float] = Field(default_factory=dict)
+    strategy_exposure: dict[str, float] = Field(default_factory=dict)
+
+    @property
+    def equity(self) -> float:
+        return self.cash + self.collateral + self.realized_pnl + self.unrealized_pnl
+
+
 class StressTestResult(BaseModel):
     scenario: str
     price_shock_pct: float

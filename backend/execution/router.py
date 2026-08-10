@@ -4,8 +4,13 @@ from datetime import datetime, timezone
 from backend.config import (
     EXECUTION_MODE,
     LIVE_EXECUTION_ENABLED,
+    MAX_ORDER_NOTIONAL,
+    MAX_ORDER_SLIPPAGE_BPS,
     PRICE_FRESHNESS_THRESHOLD_S,
     PRICE_INTEGRITY_BLOCK_LIVE,
+    SUPPORTED_EXECUTION_MARKETS,
+    SUPPORTED_EXECUTION_VENUES,
+    SUPPORTED_ORDER_TYPES,
 )
 from backend.core.event_bus import EventBus, EventType
 from backend.core.state_store import StateStore
@@ -21,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 def _symbol_from_market(market: str) -> str:
     m = market.upper().replace("-PERP", "_USD").replace("/", "_")
+    normalized = market.upper().strip()
+    if normalized not in SUPPORTED_EXECUTION_MARKETS:
+        raise ValueError(f"Unsupported execution market '{market}'")
     if not m.endswith("_USD") and not m.endswith("_USDC") and not m.endswith("_USDT"):
         m = m.split("-")[0].split("/")[0] + "_USD"
     return m
@@ -148,12 +156,24 @@ class ExecutionRouter:
 
     def _get_risk_positions(self) -> list[dict]:
         if self.mode == "live":
-            # Canonical pre-trade risk input: include every currently observable
-            # position across paper + enabled live venues instead of paper only.
-            # Pending/open-order exposure can be layered into this canonical list
-            # when the replacement venue adapters expose normalized order states.
             return self.get_all_positions()
         return list(self.paper.get_positions())
+
+    def _get_risk_snapshot(self, positions: list[dict]):
+        account = dict(self._store.get_snapshot("execution:account") or {})
+
+        if self.mode == "paper":
+            totals = self.paper.get_account_totals()
+            for key in (
+                "realized_pnl",
+                "unrealized_pnl",
+                "margin_used",
+                "gross_exposure",
+                "net_exposure",
+            ):
+                account.setdefault(key, totals.get(key, 0.0))
+
+        return self.risk_engine.build_portfolio_snapshot(positions, account=account)
 
     def route_order(
         self,
@@ -162,9 +182,42 @@ class ExecutionRouter:
         side: str,
         size: float,
         price: float | None = None,
+        order_type: str = "limit",
+        slippage_bps: float = 0.0,
         order_context: dict | None = None,
     ) -> dict:
         now = datetime.now(timezone.utc)
+        venue = str(venue).lower().strip()
+        market = str(market).upper().strip()
+        side = str(side).lower().strip()
+        order_type = str(order_type).lower().strip()
+
+        validation_reasons: list[str] = []
+        if venue not in SUPPORTED_EXECUTION_VENUES:
+            validation_reasons.append(f"unsupported_venue: '{venue}'")
+        if market not in SUPPORTED_EXECUTION_MARKETS:
+            validation_reasons.append(f"unsupported_market: '{market}'")
+        if side not in ("buy", "sell"):
+            validation_reasons.append(f"unsupported_side: '{side}'")
+        if order_type not in SUPPORTED_ORDER_TYPES:
+            validation_reasons.append(f"unsupported_order_type: '{order_type}'")
+        if size <= 0:
+            validation_reasons.append("invalid_size: size must be greater than zero")
+        if price is not None and price <= 0:
+            validation_reasons.append("invalid_price: price must be greater than zero when provided")
+        if slippage_bps < 0 or slippage_bps > MAX_ORDER_SLIPPAGE_BPS:
+            validation_reasons.append(
+                f"invalid_slippage: {slippage_bps} bps exceeds allowed range 0-{MAX_ORDER_SLIPPAGE_BPS}"
+            )
+
+        if validation_reasons:
+            return {
+                "status": "blocked",
+                "reasons": validation_reasons,
+                "execution_mode": self.mode,
+                **(order_context or {}),
+                "ts": now.isoformat(),
+            }
 
         if self.mode == "live" and not self.live_execution_enabled:
             return {
@@ -197,6 +250,17 @@ class ExecutionRouter:
             return {
                 "status": "blocked",
                 "reasons": ["No price data available — try again when feeds are active"],
+                **data_ctx,
+                "ts": now.isoformat(),
+            }
+
+        order_notional = abs(float(size) * float(fill_price))
+        if order_notional > MAX_ORDER_NOTIONAL:
+            return {
+                "status": "blocked",
+                "reasons": [
+                    f"max_notional_exceeded: {order_notional:.2f} > {MAX_ORDER_NOTIONAL:.2f}"
+                ],
                 **data_ctx,
                 "ts": now.isoformat(),
             }
@@ -266,26 +330,43 @@ class ExecutionRouter:
                     },
                 )
 
+        if self.mode == "paper" and fill_price > 0:
+            self.paper.mark_to_market(venue, market, fill_price)
+
         positions = self._get_risk_positions()
+        portfolio_snapshot = self._get_risk_snapshot(positions)
         proposed = {
             "venue": venue,
             "market": market,
             "side": side,
             "size": size,
             "price": fill_price,
+            "order_type": order_type,
+            "slippage_bps": slippage_bps,
         }
 
-        allowed, reasons = self.risk_engine.check_constraints(positions, proposed, execution_mode=self.mode)
+        allowed, reasons = self.risk_engine.check_constraints(
+            positions,
+            proposed,
+            execution_mode=self.mode,
+            portfolio_snapshot=portfolio_snapshot,
+        )
         if not allowed:
             self.event_bus.emit(
                 EventType.RISK_THROTTLE_ON,
                 source="execution_router",
-                payload={**data_ctx, "reasons": reasons, "proposed": proposed},
+                payload={
+                    **data_ctx,
+                    "reasons": reasons,
+                    "proposed": proposed,
+                    "portfolio_metrics": self.risk_engine.last_metrics,
+                },
             )
             logger.warning("Order blocked by risk engine: %s", reasons)
             return {
                 "status": "blocked",
                 "reasons": reasons,
+                "portfolio_metrics": self.risk_engine.last_metrics,
                 **data_ctx,
                 "ts": now.isoformat(),
             }
@@ -314,10 +395,16 @@ class ExecutionRouter:
 
         if self.mode == "paper":
             result = self.paper.place_order(
-                venue=venue, market=market, side=side, size=size, price=fill_price,
+                venue=venue,
+                market=market,
+                side=side,
+                size=size,
+                order_type=order_type,
+                price=fill_price,
                 data_context=data_ctx,
             )
             result["execution_mode"] = "paper"
+            result["portfolio_metrics"] = self.risk_engine.last_metrics
             result.update({k: v for k, v in (order_context or {}).items() if v is not None})
             return result
 
@@ -334,7 +421,11 @@ class ExecutionRouter:
 
         try:
             result = executor.place_order(
-                market=market, side=side, size=size, price=fill_price,
+                market=market,
+                side=side,
+                size=size,
+                price=fill_price,
+                order_type=order_type,
             )
             if result.get("status") == "error":
                 return {

@@ -70,6 +70,35 @@ if EXECUTION_MODE not in ("paper", "live"):
 # official/native signing flows and integration-tested.
 LIVE_EXECUTION_ENABLED: bool = _env_bool("LIVE_EXECUTION_ENABLED", False)
 
+SUPPORTED_EXECUTION_VENUES: list[str] = [
+    venue.lower()
+    for venue in _env_list(
+        "SUPPORTED_EXECUTION_VENUES",
+        ["paper", "hyperliquid", "drift"],
+    )
+]
+SUPPORTED_EXECUTION_MARKETS: list[str] = [
+    market.upper()
+    for market in _env_list(
+        "SUPPORTED_EXECUTION_MARKETS",
+        [
+            "BTC-PERP",
+            "ETH-PERP",
+            "SOL-PERP",
+            "DOGE-PERP",
+            "AVAX-PERP",
+            "MATIC-PERP",
+            "APT-PERP",
+        ],
+    )
+]
+SUPPORTED_ORDER_TYPES: list[str] = [
+    order_type.lower()
+    for order_type in _env_list("SUPPORTED_ORDER_TYPES", ["limit", "market"])
+]
+MAX_ORDER_NOTIONAL: float = _env_float("MAX_ORDER_NOTIONAL", 1_000_000.0)
+MAX_ORDER_SLIPPAGE_BPS: float = _env_float("MAX_ORDER_SLIPPAGE_BPS", 500.0)
+
 WITS_COUNTRIES: list[str] = _env_list("WITS_COUNTRIES", ["USA", "CHN", "EU"])
 WITS_PRODUCTS: list[str] = _env_list("WITS_PRODUCTS", ["TOTAL", "Capital", "Consumer", "Intermediate", "Raw"])
 
@@ -100,6 +129,11 @@ def summary() -> dict:
         "redis_url": REDIS_URL,
         "execution_mode": EXECUTION_MODE,
         "live_execution_enabled": LIVE_EXECUTION_ENABLED,
+        "supported_execution_venues": SUPPORTED_EXECUTION_VENUES,
+        "supported_execution_markets": SUPPORTED_EXECUTION_MARKETS,
+        "supported_order_types": SUPPORTED_ORDER_TYPES,
+        "max_order_notional": MAX_ORDER_NOTIONAL,
+        "max_order_slippage_bps": MAX_ORDER_SLIPPAGE_BPS,
         "hyperliquid_enabled": bool(HYPERLIQUID_API_KEY),
         "drift_enabled": bool(DRIFT_RPC_URL),
         "solana_enabled": bool(SOLANA_RPC_URL),
