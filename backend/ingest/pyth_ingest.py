@@ -5,6 +5,7 @@ import httpx
 
 from backend.core.models import PriceTick
 from backend.core.state_store import StateStore
+from backend.data.repositories.market_repo import MarketRepository
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +15,13 @@ SOL_USD_FEED_ID = "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c28
 
 class PythIngestor:
 
-    def __init__(self, state_store: StateStore | None = None):
+    def __init__(
+        self,
+        state_store: StateStore | None = None,
+        market_repo: MarketRepository | None = None,
+    ):
         self.state_store = state_store or StateStore()
+        self.market_repo = market_repo or MarketRepository()
 
     async def fetch_price(self, price_feed_id: str = SOL_USD_FEED_ID) -> PriceTick | None:
         params = {"ids[]": price_feed_id}
@@ -61,4 +67,11 @@ class PythIngestor:
             f"price:{tick.venue}:{tick.symbol}",
             tick.model_dump(mode="json"),
             ttl=120,
+        )
+        self.market_repo.save_tick(
+            symbol=tick.symbol,
+            venue=tick.venue,
+            price=tick.price,
+            confidence=tick.confidence,
+            ts=tick.ts,
         )

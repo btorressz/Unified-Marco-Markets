@@ -5,6 +5,7 @@ import httpx
 
 from backend.core.models import PriceTick, FundingTick
 from backend.core.state_store import StateStore
+from backend.data.repositories.market_repo import MarketRepository
 
 logger = logging.getLogger(__name__)
 
@@ -13,8 +14,13 @@ DRIFT_API_BASE = "https://mainnet-beta.api.drift.trade"
 
 class DriftIngestor:
 
-    def __init__(self, state_store: StateStore | None = None):
+    def __init__(
+        self,
+        state_store: StateStore | None = None,
+        market_repo: MarketRepository | None = None,
+    ):
         self.state_store = state_store or StateStore()
+        self.market_repo = market_repo or MarketRepository()
 
     async def fetch_market_data(self, market: str = "SOL-PERP") -> PriceTick | None:
         url = f"{DRIFT_API_BASE}/markets"
@@ -86,10 +92,23 @@ class DriftIngestor:
             tick.model_dump(mode="json"),
             ttl=120,
         )
+        self.market_repo.save_tick(
+            symbol=tick.symbol,
+            venue=tick.venue,
+            price=tick.price,
+            confidence=tick.confidence,
+            ts=tick.ts,
+        )
 
     def _store_funding(self, tick: FundingTick) -> None:
         self.state_store.set_snapshot(
             f"funding:{tick.venue}:{tick.market}",
             tick.model_dump(mode="json"),
             ttl=300,
+        )
+        self.market_repo.save_funding_tick(
+            venue=tick.venue,
+            market=tick.market,
+            funding_rate=tick.funding_rate,
+            ts=tick.ts,
         )

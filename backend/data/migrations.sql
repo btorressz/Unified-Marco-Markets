@@ -252,3 +252,23 @@ CREATE INDEX IF NOT EXISTS idx_conditional_orders_oco_group
 CREATE INDEX IF NOT EXISTS idx_conditional_orders_parent
     ON conditional_orders (parent_id)
     WHERE parent_id IS NOT NULL;
+
+-- Durable historical backtest metadata. Historical observations stay in their
+-- existing source tables; this table records only run configuration and output.
+CREATE TABLE IF NOT EXISTS backtest_runs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    mode VARCHAR(20) NOT NULL DEFAULT 'synthetic',
+    strategy VARCHAR(50) NOT NULL,
+    venue VARCHAR(50),
+    market VARCHAR(50),
+    start_ts TIMESTAMPTZ,
+    end_ts TIMESTAMPTZ,
+    config JSONB NOT NULL DEFAULT '{}',
+    data_manifest JSONB NOT NULL DEFAULT '{}',
+    metrics JSONB NOT NULL DEFAULT '{}',
+    status VARCHAR(30) NOT NULL DEFAULT 'running',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_created_at ON backtest_runs (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_mode ON backtest_runs (mode);
