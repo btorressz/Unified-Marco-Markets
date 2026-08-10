@@ -128,12 +128,12 @@ class BacktestRepository:
         rows = execute_query(
             """SELECT f.id, f.order_id, f.venue_fill_id, f.size, f.price,
                       f.fee, f.funding, f.slippage, f.payload, f.ts,
-                      o.venue, o.market, o.side, o.strategy_id
+                      o.venue, o.market, o.side, oi.strategy_id
                FROM fills f
                JOIN orders o ON o.id = f.order_id
                LEFT JOIN order_intents oi ON oi.id = o.intent_id
                WHERE f.ts >= %s::timestamptz AND f.ts <= %s::timestamptz
-               ORDER BY f.ts ASC, f.id ASC""".replace("o.strategy_id", "oi.strategy_id"),
+               ORDER BY f.ts ASC, f.id ASC""",
             (start_ts, end_ts),
         )
         return [_normalize_row(row) for row in rows]
