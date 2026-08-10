@@ -1,7 +1,12 @@
 import logging
 from datetime import datetime, timezone
 
-from backend.config import EXECUTION_MODE, PRICE_FRESHNESS_THRESHOLD_S, PRICE_INTEGRITY_BLOCK_LIVE
+from backend.config import (
+    EXECUTION_MODE,
+    LIVE_EXECUTION_ENABLED,
+    PRICE_FRESHNESS_THRESHOLD_S,
+    PRICE_INTEGRITY_BLOCK_LIVE,
+)
 from backend.core.event_bus import EventBus, EventType
 from backend.core.state_store import StateStore
 from backend.core.price_authority import PriceAuthority
@@ -27,6 +32,7 @@ class ExecutionRouter:
         self.event_bus = event_bus or EventBus()
         self.risk_engine = risk_engine or RiskEngine()
         self.mode = EXECUTION_MODE
+        self.live_execution_enabled = LIVE_EXECUTION_ENABLED
         self._store = StateStore()
         self._price_authority = PriceAuthority(state_store=self._store)
         self._exec_agent = ExecutionAgent()
@@ -36,7 +42,7 @@ class ExecutionRouter:
         self.hyperliquid: HyperliquidExecutor | None = None
         self.drift: DriftExecutor | None = None
 
-        if self.mode == "live":
+        if self.mode == "live" and self.live_execution_enabled:
             try:
                 self.hyperliquid = HyperliquidExecutor(event_bus=self.event_bus)
             except Exception as exc:
@@ -46,8 +52,16 @@ class ExecutionRouter:
                 self.drift = DriftExecutor(event_bus=self.event_bus)
             except Exception as exc:
                 logger.error("Failed to init DriftExecutor: %s", exc, exc_info=True)
+        elif self.mode == "live":
+            logger.warning(
+                "EXECUTION_MODE=live requested but LIVE_EXECUTION_ENABLED is false; real execution is hard-disabled"
+            )
 
-        logger.info("ExecutionRouter initialised mode=%s", self.mode)
+        logger.info(
+            "ExecutionRouter initialised mode=%s live_execution_enabled=%s",
+            self.mode,
+            self.live_execution_enabled,
+        )
 
     def _get_live_price(self, market: str) -> dict:
         symbol = _symbol_from_market(market)
@@ -76,8 +90,10 @@ class ExecutionRouter:
             "found": True,
         }
 
-    def _get_data_context(self, live_price: dict | None = None) -> dict:
+    def _get_data_context(self, live_price: dict | None = None, order_context: dict | None = None) -> dict:
         ctx = {"execution_mode": self.mode}
+        if order_context:
+            ctx.update({k: v for k, v in order_context.items() if v is not None})
         now = datetime.now(timezone.utc)
 
         idx = self._store.get_snapshot("index:latest")
@@ -130,6 +146,15 @@ class ExecutionRouter:
             ms["price_integrity"] = "OK"
         return ms
 
+    def _get_risk_positions(self) -> list[dict]:
+        if self.mode == "live":
+            # Canonical pre-trade risk input: include every currently observable
+            # position across paper + enabled live venues instead of paper only.
+            # Pending/open-order exposure can be layered into this canonical list
+            # when the replacement venue adapters expose normalized order states.
+            return self.get_all_positions()
+        return list(self.paper.get_positions())
+
     def route_order(
         self,
         venue: str,
@@ -137,13 +162,26 @@ class ExecutionRouter:
         side: str,
         size: float,
         price: float | None = None,
+        order_context: dict | None = None,
     ) -> dict:
         now = datetime.now(timezone.utc)
+
+        if self.mode == "live" and not self.live_execution_enabled:
+            return {
+                "status": "blocked",
+                "reasons": [
+                    "Live execution is disabled. Set both EXECUTION_MODE=live and LIVE_EXECUTION_ENABLED=true only after venue adapters are production-ready."
+                ],
+                "execution_mode": "live",
+                "live_execution_enabled": False,
+                **(order_context or {}),
+                "ts": now.isoformat(),
+            }
 
         live_price_info = self._get_live_price(market)
         fill_price = price if price is not None and price > 0 else live_price_info.get("price", 0.0)
 
-        data_ctx = self._get_data_context(live_price_info)
+        data_ctx = self._get_data_context(live_price_info, order_context=order_context)
 
         if not live_price_info.get("found") and fill_price <= 0:
             self.event_bus.emit(
@@ -228,7 +266,7 @@ class ExecutionRouter:
                     },
                 )
 
-        positions = self.paper.get_positions()
+        positions = self._get_risk_positions()
         proposed = {
             "venue": venue,
             "market": market,
@@ -280,36 +318,63 @@ class ExecutionRouter:
                 data_context=data_ctx,
             )
             result["execution_mode"] = "paper"
+            result.update({k: v for k, v in (order_context or {}).items() if v is not None})
             return result
 
         executor = self._get_live_executor(venue)
         if executor is None:
-            logger.warning("No live executor for venue=%s, falling back to paper", venue)
-            result = self.paper.place_order(
-                venue=venue, market=market, side=side, size=size, price=fill_price,
-                data_context=data_ctx,
-            )
-            result["execution_mode"] = "paper_fallback"
-            return result
+            logger.error("No production-ready live executor available for venue=%s", venue)
+            return {
+                "status": "blocked",
+                "reasons": [f"No production-ready live executor available for venue '{venue}'"],
+                "execution_mode": "live",
+                **data_ctx,
+                "ts": now.isoformat(),
+            }
 
         try:
             result = executor.place_order(
                 market=market, side=side, size=size, price=fill_price,
             )
+            if result.get("status") == "error":
+                return {
+                    "status": "execution_state_unknown",
+                    "requires_reconciliation": True,
+                    "reason": result.get("reason", "Live venue returned an execution error"),
+                    "venue": venue,
+                    "market": market,
+                    "side": side,
+                    "size": size,
+                    **data_ctx,
+                    "ts": now.isoformat(),
+                }
             result["execution_mode"] = "live"
             result["venue"] = venue
             result.update(data_ctx)
             return result
         except Exception as exc:
-            logger.error("Live execution failed for %s, falling back to paper: %s", venue, exc, exc_info=True)
-            result = self.paper.place_order(
-                venue=venue, market=market, side=side, size=size, price=fill_price,
-                data_context=data_ctx,
+            logger.error(
+                "Live execution state unknown for %s after submission attempt: %s",
+                venue,
+                exc,
+                exc_info=True,
             )
-            result["execution_mode"] = "paper_fallback"
-            return result
+            return {
+                "status": "execution_state_unknown",
+                "requires_reconciliation": True,
+                "reason": "Live submission raised after execution may have reached the venue",
+                "venue": venue,
+                "market": market,
+                "side": side,
+                "size": size,
+                "error": str(exc),
+                **data_ctx,
+                "ts": now.isoformat(),
+            }
 
     def _get_live_executor(self, venue: str):
+        if not self.live_execution_enabled:
+            return None
         venue_lower = venue.lower()
         if venue_lower == "hyperliquid" and self.hyperliquid and self.hyperliquid.enabled:
             return self.hyperliquid
@@ -320,7 +385,7 @@ class ExecutionRouter:
     def get_all_positions(self) -> list[dict]:
         positions = list(self.paper.get_positions())
 
-        if self.mode == "live":
+        if self.mode == "live" and self.live_execution_enabled:
             if self.hyperliquid and self.hyperliquid.enabled:
                 try:
                     positions.extend(self.hyperliquid.get_positions())
@@ -338,9 +403,9 @@ class ExecutionRouter:
     def get_status(self) -> dict:
         return {
             "execution_mode": self.mode,
+            "live_execution_enabled": self.live_execution_enabled,
             "paper_enabled": self.paper.enabled,
             "hyperliquid_enabled": self.hyperliquid.enabled if self.hyperliquid else False,
             "drift_enabled": self.drift.enabled if self.drift else False,
             "risk_status": self.risk_engine.get_status(),
         }
-

@@ -31,6 +31,13 @@ def _env_float(key: str, default: float = 0.0) -> float:
         return default
 
 
+def _env_bool(key: str, default: bool = False) -> bool:
+    raw = os.environ.get(key, "")
+    if not raw:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 def _env_list(key: str, default: list[str] | None = None) -> list[str]:
     raw = os.environ.get(key, "")
     if not raw:
@@ -58,6 +65,11 @@ if EXECUTION_MODE not in ("paper", "live"):
     logger.warning("Invalid EXECUTION_MODE=%r, defaulting to 'paper'", EXECUTION_MODE)
     EXECUTION_MODE = "paper"
 
+# Live execution is intentionally a second, independent safety gate. The venue
+# adapters remain research/prototype integrations until they are replaced with
+# official/native signing flows and integration-tested.
+LIVE_EXECUTION_ENABLED: bool = _env_bool("LIVE_EXECUTION_ENABLED", False)
+
 WITS_COUNTRIES: list[str] = _env_list("WITS_COUNTRIES", ["USA", "CHN", "EU"])
 WITS_PRODUCTS: list[str] = _env_list("WITS_PRODUCTS", ["TOTAL", "Capital", "Consumer", "Intermediate", "Raw"])
 
@@ -72,7 +84,7 @@ MAX_DAILY_LOSS: float = _env_float("MAX_DAILY_LOSS", 500.0)
 COOLDOWN_SECONDS: int = _env_int("COOLDOWN_SECONDS", 300)
 
 PRICE_FRESHNESS_THRESHOLD_S: int = _env_int("PRICE_FRESHNESS_THRESHOLD_S", 30)
-PRICE_INTEGRITY_BLOCK_LIVE: bool = _env("PRICE_INTEGRITY_BLOCK_LIVE", "1") in ("1", "true", "yes")
+PRICE_INTEGRITY_BLOCK_LIVE: bool = _env_bool("PRICE_INTEGRITY_BLOCK_LIVE", True)
 
 LOG_LEVEL: str = _env("LOG_LEVEL", "INFO").upper()
 
@@ -87,6 +99,7 @@ def summary() -> dict:
         "database_configured": bool(DATABASE_URL),
         "redis_url": REDIS_URL,
         "execution_mode": EXECUTION_MODE,
+        "live_execution_enabled": LIVE_EXECUTION_ENABLED,
         "hyperliquid_enabled": bool(HYPERLIQUID_API_KEY),
         "drift_enabled": bool(DRIFT_RPC_URL),
         "solana_enabled": bool(SOLANA_RPC_URL),

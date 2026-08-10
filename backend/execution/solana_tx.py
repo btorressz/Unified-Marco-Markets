@@ -29,9 +29,21 @@ class SolanaTxHelper:
             return resp.json()
 
     def sign_and_send(self, tx_bytes: bytes) -> str:
+        """Fail closed until real transaction signing is implemented.
+
+        The previous implementation only base64-encoded raw transaction bytes
+        and submitted them while claiming to sign. That is unsafe and can also
+        misreport RPC errors as successful signatures.
+        """
+        logger.error("Solana transaction signing is not implemented; submission blocked")
+        return "error:transaction_signing_not_implemented"
+
+    def send_signed_transaction(self, signed_tx_bytes: bytes) -> str:
+        """Submit bytes that the caller has already cryptographically signed."""
         try:
             import base64
-            encoded = base64.b64encode(tx_bytes).decode()
+
+            encoded = base64.b64encode(signed_tx_bytes).decode()
             result = self._rpc_call("sendTransaction", [encoded, {"encoding": "base64"}])
 
             if "error" in result:
@@ -40,13 +52,17 @@ class SolanaTxHelper:
                 return f"error:{err.get('message', str(err))}"
 
             tx_sig = result.get("result", "")
-            logger.info("Solana TX sent: %s", tx_sig)
+            if not tx_sig:
+                return "error:missing_transaction_signature"
+            logger.info("Solana signed TX sent: %s", tx_sig)
             return tx_sig
         except Exception as exc:
-            logger.error("Solana sign_and_send error: %s", exc, exc_info=True)
+            logger.error("Solana send_signed_transaction error: %s", exc, exc_info=True)
             return f"error:{exc}"
 
     def confirm_tx(self, signature: str, timeout: int = 30) -> bool:
+        if not signature or signature.startswith("error:"):
+            return False
         try:
             deadline = time.time() + timeout
             while time.time() < deadline:

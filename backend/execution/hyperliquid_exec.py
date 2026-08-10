@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from backend.config import HYPERLIQUID_API_KEY
+from backend.config import HYPERLIQUID_API_KEY, EXECUTION_MODE, LIVE_EXECUTION_ENABLED
 from backend.core.event_bus import EventBus, EventType
 
 logger = logging.getLogger(__name__)
@@ -12,21 +12,35 @@ API_BASE = "https://api.hyperliquid.xyz"
 
 
 class HyperliquidExecutor:
+    """Research/prototype adapter.
+
+    Live order submission remains disabled until this class is replaced with an
+    official/native signed Hyperliquid client flow and integration-tested.
+    """
+
+    production_ready = False
 
     def __init__(self, event_bus: EventBus | None = None):
         self.event_bus = event_bus or EventBus()
         self.api_key = HYPERLIQUID_API_KEY
-        self.enabled = bool(self.api_key)
+        self.enabled = bool(
+            self.api_key
+            and EXECUTION_MODE == "live"
+            and LIVE_EXECUTION_ENABLED
+            and self.production_ready
+        )
 
         if not self.enabled:
-            logger.warning("HyperliquidExecutor disabled: HYPERLIQUID_API_KEY not set")
+            logger.warning(
+                "HyperliquidExecutor disabled: prototype adapter is not production-ready"
+            )
         else:
             logger.info("HyperliquidExecutor initialised")
 
     def _disabled_response(self, action: str) -> dict:
         return {
             "status": "error",
-            "reason": f"HyperliquidExecutor disabled (no API key) — cannot {action}",
+            "reason": f"HyperliquidExecutor is prototype-only — cannot {action} until official signing integration is implemented",
         }
 
     def place_order(
@@ -41,6 +55,7 @@ class HyperliquidExecutor:
             return self._disabled_response("place_order")
 
         try:
+            asset_index = _asset_index(market)
             self.event_bus.emit(
                 EventType.ORDER_SENT,
                 source="hyperliquid_executor",
@@ -51,7 +66,7 @@ class HyperliquidExecutor:
                 "type": "order",
                 "orders": [
                     {
-                        "a": _asset_index(market),
+                        "a": asset_index,
                         "b": side.lower() == "buy",
                         "p": str(price),
                         "s": str(size),
@@ -71,14 +86,15 @@ class HyperliquidExecutor:
                 resp.raise_for_status()
                 data = resp.json()
 
-            self.event_bus.emit(
-                EventType.ORDER_FILLED,
-                source="hyperliquid_executor",
-                payload={"market": market, "response": data},
-            )
-
-            logger.info("Hyperliquid order placed: %s %s %s", market, side, size)
-            return {"status": "ok", "data": data, "ts": datetime.now(timezone.utc).isoformat()}
+            # An HTTP acknowledgement is not proof of a fill. Do not emit
+            # ORDER_FILLED here; reconciliation must determine final state.
+            logger.info("Hyperliquid order submission acknowledged: %s %s %s", market, side, size)
+            return {
+                "status": "submitted",
+                "data": data,
+                "requires_reconciliation": True,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
         except Exception as exc:
             logger.error("Hyperliquid place_order error: %s", exc, exc_info=True)
             return {"status": "error", "reason": str(exc)}
@@ -98,14 +114,14 @@ class HyperliquidExecutor:
                 resp.raise_for_status()
                 data = resp.json()
 
-            logger.info("Hyperliquid order cancelled: %s", oid)
-            return {"status": "ok", "data": data}
+            logger.info("Hyperliquid order cancel acknowledged: %s", oid)
+            return {"status": "submitted", "data": data, "requires_reconciliation": True}
         except Exception as exc:
             logger.error("Hyperliquid cancel_order error: %s", exc, exc_info=True)
             return {"status": "error", "reason": str(exc)}
 
     def get_positions(self) -> list:
-        if not self.enabled:
+        if not self.api_key:
             return []
 
         try:
@@ -135,7 +151,7 @@ class HyperliquidExecutor:
             return []
 
     def get_open_orders(self) -> list:
-        if not self.enabled:
+        if not self.api_key:
             return []
 
         try:
@@ -154,7 +170,10 @@ class HyperliquidExecutor:
 
 def _asset_index(market: str) -> int:
     known = {"BTC": 0, "ETH": 1, "SOL": 2, "DOGE": 3, "AVAX": 4, "MATIC": 5}
-    return known.get(market.upper().replace("-PERP", "").replace("-USD", ""), 0)
+    symbol = market.upper().replace("-PERP", "").replace("-USD", "")
+    if symbol not in known:
+        raise ValueError(f"Unsupported Hyperliquid market '{market}'")
+    return known[symbol]
 
 
 def _nonce() -> int:

@@ -20,8 +20,10 @@ class EventType:
     RISK_THROTTLE_ON = "RISK_THROTTLE_ON"
     RISK_THROTTLE_OFF = "RISK_THROTTLE_OFF"
     RULE_ACTION_PROPOSED = "RULE_ACTION_PROPOSED"
+    ORDER_INTENT_CREATED = "ORDER_INTENT_CREATED"
     ORDER_SENT = "ORDER_SENT"
     ORDER_FILLED = "ORDER_FILLED"
+    ORDER_EXECUTION_STATE_UNKNOWN = "ORDER_EXECUTION_STATE_UNKNOWN"
     SWAP_QUOTED = "SWAP_QUOTED"
     SWAP_SENT = "SWAP_SENT"
     ERROR = "ERROR"
@@ -110,7 +112,8 @@ class EventType:
     ALL = [
         INDEX_UPDATE, SHOCK_SPIKE, DIVERGENCE_ALERT, FUNDING_REGIME_FLIP,
         RISK_THROTTLE_ON, RISK_THROTTLE_OFF, RULE_ACTION_PROPOSED,
-        ORDER_SENT, ORDER_FILLED, SWAP_QUOTED, SWAP_SENT, ERROR,
+        ORDER_INTENT_CREATED, ORDER_SENT, ORDER_FILLED, ORDER_EXECUTION_STATE_UNKNOWN,
+        SWAP_QUOTED, SWAP_SENT, ERROR,
         STABLE_DEPEG_ALERT, STABLE_VOLUME_SPIKE, STABLE_FUNDING_SPIKE,
         STABLE_STRESS_ALERT, PEG_BREAK_PROB_UPDATE,
         PREDICTION_UPDATE, PREDICTION_CONFIDENCE_LOW,
@@ -154,18 +157,6 @@ class EventType:
 
 CHANNEL = "desk:events"
 
-_CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS events (
-    id TEXT PRIMARY KEY,
-    event_type TEXT NOT NULL,
-    source TEXT NOT NULL,
-    payload JSONB DEFAULT '{}',
-    ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_events_type ON events (event_type);
-CREATE INDEX IF NOT EXISTS idx_events_ts ON events (ts DESC);
-"""
-
 
 class EventBus:
 
@@ -177,7 +168,6 @@ class EventBus:
         self._redis_url = redis_url or os.environ.get("REDIS_URL", "redis://localhost:6379")
         self._database_url = database_url or os.environ.get("DATABASE_URL", "")
         self._redis: redis.Redis | None = None
-        self._table_ensured = False
 
     def _get_redis(self) -> redis.Redis | None:
         if self._redis is not None:
@@ -202,21 +192,6 @@ class EventBus:
             logger.warning("Postgres unavailable, event persistence disabled", exc_info=True)
             return None
 
-    def _ensure_table(self) -> None:
-        if self._table_ensured:
-            return
-        conn = self._get_pg_conn()
-        if conn is None:
-            return
-        try:
-            with conn.cursor() as cur:
-                cur.execute(_CREATE_TABLE_SQL)
-            self._table_ensured = True
-        except Exception:
-            logger.warning("Failed to ensure events table", exc_info=True)
-        finally:
-            conn.close()
-
     def emit(self, event_type: str, source: str, payload: dict[str, Any] | None = None) -> str:
         event_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
@@ -237,7 +212,6 @@ class EventBus:
             except Exception:
                 logger.warning("Failed to publish event to Redis", exc_info=True)
 
-        self._ensure_table()
         conn = self._get_pg_conn()
         if conn is not None:
             try:
@@ -255,7 +229,6 @@ class EventBus:
         return event_id
 
     def get_recent(self, limit: int = 50) -> list[dict[str, Any]]:
-        self._ensure_table()
         conn = self._get_pg_conn()
         if conn is None:
             return []
@@ -269,6 +242,8 @@ class EventBus:
                 results = []
                 for row in rows:
                     entry = dict(row)
+                    if isinstance(entry.get("id"), uuid.UUID):
+                        entry["id"] = str(entry["id"])
                     if isinstance(entry.get("ts"), datetime):
                         entry["ts"] = entry["ts"].isoformat()
                     if isinstance(entry.get("payload"), str):
@@ -285,7 +260,6 @@ class EventBus:
             conn.close()
 
     def get_events_around(self, ts_iso: str, window_seconds: int = 120, limit: int = 50) -> list[dict[str, Any]]:
-        self._ensure_table()
         conn = self._get_pg_conn()
         if conn is None:
             return []
@@ -302,6 +276,8 @@ class EventBus:
                 results = []
                 for row in rows:
                     entry = dict(row)
+                    if isinstance(entry.get("id"), uuid.UUID):
+                        entry["id"] = str(entry["id"])
                     if isinstance(entry.get("ts"), datetime):
                         entry["ts"] = entry["ts"].isoformat()
                     if isinstance(entry.get("payload"), str):
