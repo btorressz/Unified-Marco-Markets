@@ -21,6 +21,13 @@ _LATEST_TTL = 1800
 _HISTORY: list[dict[str, Any]] = []
 _MAX_HISTORY = 20
 
+_HISTORICAL_SYMBOL_BY_VENUE = {
+    "drift": "SOL-PERP",
+    "pyth": "SOL/USD",
+    "kraken": "SOLUSD",
+    "coingecko": "SOLANA/USD",
+}
+
 
 def _historical_window(config: dict[str, Any]) -> tuple[str, str]:
     end_raw = config.get("end_ts")
@@ -59,17 +66,21 @@ def run_backtest_endpoint(body: dict[str, Any] | None = None):
     historical_data = None
     if mode == "historical":
         start_ts, end_ts = _historical_window(config)
+        venue = str(config.get("venue") or "drift").lower().strip()
+        market = str(config.get("market") or "SOL-PERP").upper().strip()
+        symbol = str(config.get("symbol") or _HISTORICAL_SYMBOL_BY_VENUE.get(venue, market)).upper().strip()
         config["start_ts"] = start_ts
         config["end_ts"] = end_ts
-        config.setdefault("market", "SOL-PERP")
-        config.setdefault("symbol", "SOL_USD")
+        config["venue"] = venue
+        config["market"] = market
+        config["symbol"] = symbol
         try:
             historical_data = _repo.load_historical_bundle(
                 start_ts=start_ts,
                 end_ts=end_ts,
-                venue=str(config.get("venue", "hyperliquid")),
-                symbol=str(config.get("symbol", "SOL_USD")),
-                market=str(config.get("market", "SOL-PERP")),
+                venue=venue,
+                symbol=symbol,
+                market=market,
             )
         except Exception as exc:
             logger.warning("Historical data load failed: %s", exc, exc_info=True)
@@ -223,6 +234,7 @@ def get_backtest_data_coverage():
         coverage = _repo.data_coverage()
         return {
             "coverage": coverage,
+            "historical_symbol_defaults": _HISTORICAL_SYMBOL_BY_VENUE,
             "ts": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as exc:
