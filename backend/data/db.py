@@ -1,5 +1,6 @@
 import os
 import logging
+import threading
 from pathlib import Path
 
 import psycopg2
@@ -8,24 +9,34 @@ import psycopg2.pool
 
 logger = logging.getLogger(__name__)
 
-_pool: psycopg2.pool.SimpleConnectionPool | None = None
+_pool: psycopg2.pool.ThreadedConnectionPool | None = None
+_pool_init_lock = threading.Lock()
 
 MIGRATIONS_PATH = Path(__file__).parent / "migrations.sql"
+_MIGRATION_ADVISORY_LOCK_ID = 824873219
 
 
 def _get_database_url() -> str:
     return os.environ.get("DATABASE_URL", "")
 
 
-def _get_pool() -> psycopg2.pool.SimpleConnectionPool:
+def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
     global _pool
-    if _pool is None or _pool.closed:
+
+    if _pool is not None and not _pool.closed:
+        return _pool
+
+    with _pool_init_lock:
+        if _pool is not None and not _pool.closed:
+            return _pool
+
         url = _get_database_url()
         if not url:
             raise RuntimeError("DATABASE_URL not set")
-        _pool = psycopg2.pool.SimpleConnectionPool(1, 10, url)
-        logger.info("Database connection pool created")
-    return _pool
+
+        _pool = psycopg2.pool.ThreadedConnectionPool(1, 10, url)
+        logger.info("Thread-safe database connection pool created")
+        return _pool
 
 
 def get_connection():
@@ -35,15 +46,36 @@ def get_connection():
     return conn
 
 
-def release_connection(conn):
-    try:
-        pool = _get_pool()
-        pool.putconn(conn)
-    except Exception:
+def release_connection(conn) -> None:
+    """Return a connection without ever resurrecting a closed pool."""
+    pool = _pool
+    if pool is not None and not pool.closed:
         try:
-            conn.close()
+            pool.putconn(conn)
+            return
         except Exception:
-            pass
+            logger.warning("Failed to return database connection to pool", exc_info=True)
+
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+def close_pool() -> None:
+    """Close all pooled PostgreSQL connections. Safe to call more than once."""
+    global _pool
+
+    with _pool_init_lock:
+        pool = _pool
+        _pool = None
+        if pool is None or pool.closed:
+            return
+        try:
+            pool.closeall()
+            logger.info("Database connection pool closed")
+        except Exception:
+            logger.warning("Failed to close database connection pool cleanly", exc_info=True)
 
 
 def execute_query(sql: str, params: tuple | list | None = None) -> list[dict]:
@@ -86,16 +118,30 @@ def init_db() -> None:
     if not MIGRATIONS_PATH.exists():
         logger.warning("Migrations file not found at %s", MIGRATIONS_PATH)
         return
+
     sql = MIGRATIONS_PATH.read_text()
     conn = get_connection()
+    lock_acquired = False
+
     try:
         with conn.cursor() as cur:
+            # Multiple application workers can start concurrently. A session-level
+            # advisory lock serializes migrations without introducing a second
+            # migration framework or changing the existing migrations.sql flow.
+            cur.execute("SELECT pg_advisory_lock(%s)", (_MIGRATION_ADVISORY_LOCK_ID,))
+            lock_acquired = True
             cur.execute(sql)
         logger.info("Database migrations applied successfully")
     except Exception:
         logger.error("Failed to apply migrations", exc_info=True)
         raise
     finally:
+        if lock_acquired:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT pg_advisory_unlock(%s)", (_MIGRATION_ADVISORY_LOCK_ID,))
+            except Exception:
+                logger.warning("Failed to release database migration advisory lock", exc_info=True)
         release_connection(conn)
 
 
