@@ -198,7 +198,10 @@ class StateStore:
             return False
 
     def set_idempotency_key(self, key: str, ttl: int = 60) -> bool:
-        return self.claim_idempotency(key, ttl=ttl)
+        # Backward-compatible boolean contract used by execution_routes: only a
+        # confirmed duplicate returns False. Redis outages remain fail-open and
+        # are reported through runtime health instead of becoming false 409s.
+        return self.claim_idempotency_status(key, ttl=ttl) != "duplicate"
 
     def check_idempotency_key(self, key: str) -> bool:
         return self.get_idempotency(key) is not None
