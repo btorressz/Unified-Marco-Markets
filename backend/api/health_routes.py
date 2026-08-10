@@ -7,6 +7,7 @@ from fastapi import APIRouter
 
 from backend.core.schemas import HealthResponse
 from backend.core.state_store import StateStore
+from backend.core.redis_runtime import get_redis_runtime
 from backend.data.db import check_connection
 
 logger = logging.getLogger(__name__)
@@ -28,9 +29,6 @@ _FEED_DEFINITIONS: list[dict[str, Any]] = [
 
 _WARNING_MULTIPLIER = 3
 _ERROR_MULTIPLIER = 10
-
-_redis_last_error: str = ""
-_redis_last_ok_ts: float = 0.0
 
 
 def _get_feed_status(feed_def: dict[str, Any], now: datetime) -> dict[str, Any]:
@@ -98,11 +96,8 @@ def health_check():
     except Exception:
         db_ok = False
 
-    try:
-        r = _state_store.get_redis()
-        redis_ok = r is not None
-    except Exception:
-        redis_ok = False
+    runtime = get_redis_runtime()
+    redis_ok, _ = runtime.ping()
 
     uptime = time.time() - _start_time
 
@@ -134,62 +129,51 @@ def feed_status():
 
 @router.get("/redis")
 def redis_health():
-    global _redis_last_error, _redis_last_ok_ts
+    runtime = get_redis_runtime()
+    connected, latency_ms = runtime.ping()
+    runtime_health = runtime.health_snapshot()
 
     result: dict[str, Any] = {
-        "connected": False,
-        "ping_latency_ms": None,
+        **runtime_health,
+        "connected": connected,
+        "ping_latency_ms": latency_ms,
         "memory_used_mb": None,
         "key_count_estimate": None,
         "pubsub_status": "unknown",
-        "last_error": _redis_last_error,
-        "fallback_mode": True,
+        "fallback_mode": not connected,
+        "key_namespace": runtime.key_prefix,
         "ts": datetime.now(timezone.utc).isoformat(),
     }
 
-    try:
-        r = _state_store.get_redis()
-        if r is None:
-            result["fallback_mode"] = True
-            result["last_error"] = _redis_last_error or "Redis unavailable"
-            return result
+    if not connected:
+        return result
 
-        t0 = time.monotonic()
-        r.ping()
-        latency_ms = (time.monotonic() - t0) * 1000
-
-        result["connected"] = True
-        result["ping_latency_ms"] = round(latency_ms, 2)
-        result["fallback_mode"] = False
-        _redis_last_ok_ts = time.time()
-
-        try:
-            info = r.info("memory")
-            used_bytes = info.get("used_memory", 0)
-            result["memory_used_mb"] = round(used_bytes / 1024 / 1024, 2)
-        except Exception:
-            pass
-
-        try:
-            result["key_count_estimate"] = r.dbsize()
-        except Exception:
-            pass
-
-        try:
-            pubsub_info = r.info("clients")
-            result["pubsub_status"] = "ok" if pubsub_info else "unknown"
-        except Exception:
-            result["pubsub_status"] = "ok"
-
-        result["last_error"] = ""
-        _redis_last_error = ""
-
-    except Exception as exc:
-        _redis_last_error = str(exc)
-        result["last_error"] = str(exc)
+    r = runtime.get_client(ping=False)
+    if r is None:
+        result["connected"] = False
         result["fallback_mode"] = True
+        return result
+
+    try:
+        info = r.info("memory")
+        used_bytes = info.get("used_memory", 0)
+        result["memory_used_mb"] = round(used_bytes / 1024 / 1024, 2)
+    except Exception:
+        pass
+
+    try:
+        result["key_count_estimate"] = r.dbsize()
+    except Exception:
+        pass
+
+    try:
+        pubsub_info = r.info("clients")
+        result["pubsub_status"] = "ok" if pubsub_info else "unknown"
+    except Exception:
+        result["pubsub_status"] = "unknown"
 
     return result
+
 
 @router.get("/data-quality")
 def data_quality_dashboard():

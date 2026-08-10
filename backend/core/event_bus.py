@@ -5,9 +5,10 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-import redis
 import psycopg2
 import psycopg2.extras
+
+from backend.core.redis_runtime import RedisRuntime, get_redis_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -178,22 +179,19 @@ class EventBus:
         self,
         redis_url: str | None = None,
         database_url: str | None = None,
+        redis_runtime: RedisRuntime | None = None,
     ):
-        self._redis_url = redis_url or os.environ.get("REDIS_URL", "redis://localhost:6379")
+        if redis_runtime is not None:
+            self._redis_runtime = redis_runtime
+        elif redis_url:
+            self._redis_runtime = RedisRuntime(redis_url=redis_url)
+        else:
+            self._redis_runtime = get_redis_runtime()
+        self._redis_url = self._redis_runtime.redis_url
         self._database_url = database_url or os.environ.get("DATABASE_URL", "")
-        self._redis: redis.Redis | None = None
 
-    def _get_redis(self) -> redis.Redis | None:
-        if self._redis is not None:
-            return self._redis
-        try:
-            self._redis = redis.Redis.from_url(self._redis_url, decode_responses=True)
-            self._redis.ping()
-            return self._redis
-        except Exception:
-            logger.warning("Redis unavailable at %s, pubsub disabled", self._redis_url)
-            self._redis = None
-            return None
+    def _get_redis(self):
+        return self._redis_runtime.get_client()
 
     def _get_pg_conn(self):
         if not self._database_url:
@@ -219,12 +217,7 @@ class EventBus:
             "ts": now.isoformat(),
         }
 
-        r = self._get_redis()
-        if r is not None:
-            try:
-                r.publish(CHANNEL, json.dumps(event_data, default=str))
-            except Exception:
-                logger.warning("Failed to publish event to Redis", exc_info=True)
+        self._redis_runtime.publish(CHANNEL, json.dumps(event_data, default=str))
 
         conn = self._get_pg_conn()
         if conn is not None:

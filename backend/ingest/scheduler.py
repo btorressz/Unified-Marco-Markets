@@ -1,8 +1,10 @@
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from backend.config import REDIS_LEASE_TTL_S
 from backend.core.event_bus import EventBus
 from backend.core.state_store import StateStore
 from backend.ingest.wits_ingest import WITSIngestor
@@ -62,45 +64,87 @@ class IngestScheduler:
         self.scheduler.shutdown(wait=False)
         logger.info("IngestScheduler stopped")
 
+    async def _run_with_lease(
+        self,
+        lease_name: str,
+        job: Callable[[], Awaitable[None]],
+    ) -> bool:
+        """Run one ingest job once across workers when Redis is available.
+
+        Redis is coordination, not a hard dependency for data availability. If
+        Redis is unavailable, preserve the existing fail-soft behavior and run
+        the job locally. When Redis is healthy and another worker owns the
+        lease, this worker skips the duplicate run.
+        """
+        if self.state_store.get_redis() is None:
+            await job()
+            return True
+
+        token = self.state_store.claim_lease(
+            f"scheduler:{lease_name}",
+            ttl=REDIS_LEASE_TTL_S,
+        )
+        if token is None:
+            if self.state_store.get_redis() is None:
+                await job()
+                return True
+            logger.debug("Skipping duplicate ingest job; lease held: %s", lease_name)
+            return False
+
+        try:
+            await job()
+            return True
+        finally:
+            self.state_store.release_lease(f"scheduler:{lease_name}", token)
+
     async def _run_wits(self) -> None:
         try:
-            await self.wits.fetch_all()
-            logger.debug("WITS ingest completed")
+            ran = await self._run_with_lease("wits", self.wits.fetch_all)
+            if ran:
+                logger.debug("WITS ingest completed")
         except Exception:
             logger.error("WITS ingest job failed", exc_info=True)
 
     async def _run_gdelt(self) -> None:
         try:
-            await self.gdelt.fetch_articles()
-            logger.debug("GDELT ingest completed")
+            ran = await self._run_with_lease("gdelt", self.gdelt.fetch_articles)
+            if ran:
+                logger.debug("GDELT ingest completed")
         except Exception:
             logger.error("GDELT ingest job failed", exc_info=True)
 
     async def _run_kraken(self) -> None:
         try:
-            await self.kraken.fetch_ticker()
-            logger.debug("Kraken ingest completed")
+            ran = await self._run_with_lease("kraken", self.kraken.fetch_ticker)
+            if ran:
+                logger.debug("Kraken ingest completed")
         except Exception:
             logger.error("Kraken ingest job failed", exc_info=True)
 
     async def _run_coingecko(self) -> None:
         try:
-            await self.coingecko.fetch_price()
-            logger.debug("CoinGecko ingest completed")
+            ran = await self._run_with_lease("coingecko", self.coingecko.fetch_price)
+            if ran:
+                logger.debug("CoinGecko ingest completed")
         except Exception:
             logger.error("CoinGecko ingest job failed", exc_info=True)
 
     async def _run_pyth(self) -> None:
         try:
-            await self.pyth.fetch_price()
-            logger.debug("Pyth ingest completed")
+            ran = await self._run_with_lease("pyth", self.pyth.fetch_price)
+            if ran:
+                logger.debug("Pyth ingest completed")
         except Exception:
             logger.error("Pyth ingest job failed", exc_info=True)
 
     async def _run_drift(self) -> None:
-        try:
+        async def fetch_drift() -> None:
             await self.drift.fetch_market_data()
             await self.drift.fetch_funding()
-            logger.debug("Drift ingest completed")
+
+        try:
+            ran = await self._run_with_lease("drift", fetch_drift)
+            if ran:
+                logger.debug("Drift ingest completed")
         except Exception:
             logger.error("Drift ingest job failed", exc_info=True)
