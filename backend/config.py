@@ -53,6 +53,13 @@ def _env_list(key: str, default: list[str] | None = None) -> list[str]:
 
 DATABASE_URL: str = _env("DATABASE_URL", "")
 REDIS_URL: str = _env("REDIS_URL", "redis://localhost:6379")
+REDIS_KEY_PREFIX: str = _env("REDIS_KEY_PREFIX", "")
+REDIS_MAX_CONNECTIONS: int = max(1, _env_int("REDIS_MAX_CONNECTIONS", 32))
+REDIS_CONNECT_TIMEOUT_S: float = max(0.1, _env_float("REDIS_CONNECT_TIMEOUT_S", 2.0))
+REDIS_SOCKET_TIMEOUT_S: float = max(0.1, _env_float("REDIS_SOCKET_TIMEOUT_S", 2.0))
+REDIS_HEALTH_CHECK_INTERVAL_S: int = max(0, _env_int("REDIS_HEALTH_CHECK_INTERVAL_S", 30))
+REDIS_LEASE_TTL_S: int = max(5, _env_int("REDIS_LEASE_TTL_S", 90))
+REDIS_PUBSUB_RETRY_S: float = max(0.5, _env_float("REDIS_PUBSUB_RETRY_S", 5.0))
 
 HYPERLIQUID_API_KEY: str = _env("HYPERLIQUID_API_KEY", "")
 DRIFT_RPC_URL: str = _env("DRIFT_RPC_URL", "")
@@ -127,6 +134,12 @@ def summary() -> dict:
     return {
         "database_configured": bool(DATABASE_URL),
         "redis_url": REDIS_URL,
+        "redis_key_prefix": REDIS_KEY_PREFIX,
+        "redis_max_connections": REDIS_MAX_CONNECTIONS,
+        "redis_connect_timeout_s": REDIS_CONNECT_TIMEOUT_S,
+        "redis_socket_timeout_s": REDIS_SOCKET_TIMEOUT_S,
+        "redis_health_check_interval_s": REDIS_HEALTH_CHECK_INTERVAL_S,
+        "redis_lease_ttl_s": REDIS_LEASE_TTL_S,
         "execution_mode": EXECUTION_MODE,
         "live_execution_enabled": LIVE_EXECUTION_ENABLED,
         "supported_execution_venues": SUPPORTED_EXECUTION_VENUES,
