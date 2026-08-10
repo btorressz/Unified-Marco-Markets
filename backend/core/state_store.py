@@ -118,17 +118,18 @@ class StateStore:
             logger.warning("Failed to get risk throttle", exc_info=True)
             return {"active": False, "reason": "", "ts": ""}
 
-    def claim_idempotency(
+    def claim_idempotency_status(
         self,
         key: str,
         *,
         ttl: int = 60,
         request_id: str | None = None,
         owner: str = "execution",
-    ) -> bool:
+    ) -> str:
+        """Return claimed, duplicate, or unavailable for one atomic claim."""
         r = self.get_redis()
         if r is None:
-            return False
+            return "unavailable"
         try:
             value = json.dumps(
                 {
@@ -139,11 +140,32 @@ class StateStore:
                 },
                 default=str,
             )
-            return bool(r.set(self._key(f"{_IDEMPOTENCY_PREFIX}{key}"), value, ex=ttl, nx=True))
+            claimed = r.set(
+                self._key(f"{_IDEMPOTENCY_PREFIX}{key}"),
+                value,
+                ex=ttl,
+                nx=True,
+            )
+            return "claimed" if claimed else "duplicate"
         except Exception as exc:
-            self._runtime.mark_failure(exc)
+            self._runtime.mark_failure(exc, reset=True)
             logger.warning("Failed to claim idempotency key=%s", key, exc_info=True)
-            return False
+            return "unavailable"
+
+    def claim_idempotency(
+        self,
+        key: str,
+        *,
+        ttl: int = 60,
+        request_id: str | None = None,
+        owner: str = "execution",
+    ) -> bool:
+        return self.claim_idempotency_status(
+            key,
+            ttl=ttl,
+            request_id=request_id,
+            owner=owner,
+        ) == "claimed"
 
     def get_idempotency(self, key: str) -> dict[str, Any] | None:
         r = self.get_redis()
@@ -207,7 +229,7 @@ class StateStore:
             )
             return token if claimed else None
         except Exception as exc:
-            self._runtime.mark_failure(exc)
+            self._runtime.mark_failure(exc, reset=True)
             logger.warning("Failed to claim Redis lease=%s", name, exc_info=True)
             return None
 
