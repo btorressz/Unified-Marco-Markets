@@ -1,10 +1,13 @@
-import os
 import json
 import asyncio
 import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+from backend.config import REDIS_PUBSUB_RETRY_S
+from backend.core.event_bus import CHANNEL
+from backend.core.redis_runtime import get_redis_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +37,13 @@ async def _get_state_snapshot() -> dict:
 
 
 async def _redis_listener(ws: WebSocket):
-    redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
+    runtime = get_redis_runtime()
     while True:
+        pubsub = None
         try:
-            import redis.asyncio as aioredis
-            r = aioredis.from_url(redis_url, decode_responses=True)
-            pubsub = r.pubsub()
-            await pubsub.subscribe("desk:events")
-            logger.info("WebSocket subscribed to desk:events")
+            pubsub = runtime.create_async_pubsub()
+            await pubsub.subscribe(runtime.channel(CHANNEL))
+            logger.info("WebSocket subscribed to %s", runtime.channel(CHANNEL))
 
             async for message in pubsub.listen():
                 if message["type"] == "message":
@@ -61,9 +63,15 @@ async def _redis_listener(ws: WebSocket):
             return
         except asyncio.CancelledError:
             return
-        except Exception:
-            logger.debug("Redis pubsub unavailable, retrying in 5s")
-            await asyncio.sleep(5)
+        except Exception as exc:
+            runtime.mark_failure(exc)
+            logger.debug(
+                "Redis pubsub unavailable, retrying in %.1fs",
+                REDIS_PUBSUB_RETRY_S,
+            )
+            await asyncio.sleep(REDIS_PUBSUB_RETRY_S)
+        finally:
+            await runtime.close_pubsub(pubsub, CHANNEL)
 
 
 async def _heartbeat(ws: WebSocket):
