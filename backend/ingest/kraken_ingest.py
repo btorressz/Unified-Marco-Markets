@@ -5,6 +5,7 @@ import httpx
 
 from backend.core.models import PriceTick
 from backend.core.state_store import StateStore
+from backend.data.repositories.market_repo import MarketRepository
 
 logger = logging.getLogger(__name__)
 
@@ -13,8 +14,13 @@ KRAKEN_TICKER_URL = "https://api.kraken.com/0/public/Ticker"
 
 class KrakenIngestor:
 
-    def __init__(self, state_store: StateStore | None = None):
+    def __init__(
+        self,
+        state_store: StateStore | None = None,
+        market_repo: MarketRepository | None = None,
+    ):
         self.state_store = state_store or StateStore()
+        self.market_repo = market_repo or MarketRepository()
 
     async def fetch_ticker(self, pair: str = "SOLUSD") -> PriceTick | None:
         try:
@@ -55,4 +61,10 @@ class KrakenIngestor:
             f"price:{tick.venue}:{tick.symbol}",
             tick.model_dump(mode="json"),
             ttl=120,
+        )
+        self.market_repo.save_tick(
+            symbol=tick.symbol,
+            venue=tick.venue,
+            price=tick.price,
+            confidence=tick.confidence,
         )
