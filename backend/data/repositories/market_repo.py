@@ -15,12 +15,13 @@ class MarketRepository:
         venue: str,
         price: float,
         confidence: float = 1.0,
+        ts: datetime | None = None,
     ) -> dict | None:
         try:
             return execute_returning(
                 """INSERT INTO market_ticks (symbol, venue, price, confidence, ts)
                    VALUES (%s, %s, %s, %s, %s) RETURNING id, symbol, venue, price, confidence, ts""",
-                (symbol, venue, price, confidence, datetime.now(timezone.utc)),
+                (symbol, venue, price, confidence, ts or datetime.now(timezone.utc)),
             )
         except Exception:
             logger.error("Failed to save market tick", exc_info=True)
@@ -31,12 +32,13 @@ class MarketRepository:
         venue: str,
         market: str,
         funding_rate: float,
+        ts: datetime | None = None,
     ) -> dict | None:
         try:
             return execute_returning(
                 """INSERT INTO funding_ticks (venue, market, funding_rate, ts)
                    VALUES (%s, %s, %s, %s) RETURNING id, venue, market, funding_rate, ts""",
-                (venue, market, funding_rate, datetime.now(timezone.utc)),
+                (venue, market, funding_rate, ts or datetime.now(timezone.utc)),
             )
         except Exception:
             logger.error("Failed to save funding tick", exc_info=True)
