@@ -1,10 +1,29 @@
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 CREATE TABLE IF NOT EXISTS events (
-    id SERIAL PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     event_type VARCHAR(100) NOT NULL,
     source VARCHAR(200) NOT NULL,
     payload JSONB DEFAULT '{}',
     ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'events'
+          AND column_name = 'id'
+          AND data_type <> 'uuid'
+    ) THEN
+        ALTER TABLE events DROP CONSTRAINT IF EXISTS events_pkey;
+        ALTER TABLE events ALTER COLUMN id DROP DEFAULT;
+        ALTER TABLE events ALTER COLUMN id TYPE UUID USING gen_random_uuid();
+        ALTER TABLE events ALTER COLUMN id SET DEFAULT gen_random_uuid();
+        ALTER TABLE events ADD PRIMARY KEY (id);
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS index_history (
     id SERIAL PRIMARY KEY,
