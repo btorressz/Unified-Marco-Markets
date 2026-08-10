@@ -217,6 +217,19 @@ class PositionLedger:
             flipped=flipped,
         ).as_dict()
 
+    def apply_funding(self, venue: str, market: str, amount: float) -> dict[str, Any] | None:
+        """Apply a signed funding credit/debit without changing position size."""
+        key = self._key(venue, market)
+        position = self._positions.get(key)
+        if position is None:
+            return None
+        value = float(amount)
+        self._funding += value
+        self._realized_pnl += value
+        position["funding"] = float(position.get("funding", 0.0)) + value
+        position["realized_pnl"] = float(position.get("realized_pnl", 0.0)) + value
+        return dict(position)
+
     def mark_to_market(self, venue: str, market: str, mark_price: float) -> dict[str, Any] | None:
         if mark_price <= 0:
             raise ValueError("Mark price must be greater than zero")
