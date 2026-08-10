@@ -6,6 +6,9 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from backend.config import EXECUTION_MODE, LIVE_EXECUTION_ENABLED
+from backend.core.event_bus import EventType
+from backend.core.state_store import StateStore
 from backend.core.schemas import ExecutionStatusResponse
 from backend.execution.router import ExecutionRouter
 from backend.execution.jupiter_exec import JupiterExecutor
@@ -19,6 +22,7 @@ router = APIRouter(prefix="/api/execution", tags=["execution"])
 _exec_router = ExecutionRouter()
 _jupiter = JupiterExecutor()
 _positions_repo = PositionsRepository()
+_state_store = StateStore()
 
 
 class OrderRequest(BaseModel):
@@ -27,8 +31,11 @@ class OrderRequest(BaseModel):
     side: str
     size: float
     price: float | None = None
-
-
+    client_order_id: str | None = None
+    request_id: str | None = None
+    strategy_id: str | None = None
+    decision_id: str | None = None
+    idempotency_key: str | None = None
 
 
 class ConditionalOrderRequest(BaseModel):
@@ -91,6 +98,7 @@ def _conditional_triggered(order: dict[str, Any], price: float | None) -> tuple[
         return (price >= float(trigger or order.get("take_profit_price") or 0), None) if side == "sell" else (price <= float(trigger or order.get("take_profit_price") or 0), None)
     return False, None
 
+
 class JupiterQuoteRequest(BaseModel):
     input_mint: str
     output_mint: str
@@ -111,6 +119,54 @@ def place_order(req: OrderRequest):
                 status_code=400,
                 detail={"status": "error", "message": f"Invalid side '{req.side}' — must be 'buy' or 'sell'"},
             )
+        if req.size <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail={"status": "error", "message": "Order size must be greater than zero"},
+            )
+        if req.price is not None and req.price <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail={"status": "error", "message": "Order price must be greater than zero when provided"},
+            )
+
+        request_id = req.request_id or str(uuid.uuid4())
+        client_order_id = req.client_order_id or request_id
+        idempotency_key = req.idempotency_key or client_order_id
+        order_context = {
+            "client_order_id": client_order_id,
+            "request_id": request_id,
+            "strategy_id": req.strategy_id,
+            "decision_id": req.decision_id,
+            "idempotency_key": idempotency_key,
+        }
+
+        idempotency_status = "degraded"
+        if _state_store.get_redis() is not None:
+            if not _state_store.set_idempotency_key(idempotency_key, ttl=300):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "status": "duplicate",
+                        "message": "Duplicate execution request rejected",
+                        **order_context,
+                    },
+                )
+            idempotency_status = "claimed"
+
+        _exec_router.event_bus.emit(
+            EventType.ORDER_INTENT_CREATED,
+            source="execution_api",
+            payload={
+                **order_context,
+                "venue": req.venue,
+                "market": req.market,
+                "side": side,
+                "size": req.size,
+                "price": req.price,
+                "idempotency_status": idempotency_status,
+            },
+        )
 
         result = _exec_router.route_order(
             venue=req.venue,
@@ -118,21 +174,32 @@ def place_order(req: OrderRequest):
             side=side,
             size=req.size,
             price=req.price,
+            order_context=order_context,
         )
+        result["idempotency_status"] = idempotency_status
+
         if result.get("status") == "blocked":
             raise HTTPException(status_code=403, detail=result)
 
-        fill_price = req.price or result.get("fill_price", 0.0)
+        if result.get("status") == "execution_state_unknown":
+            _exec_router.event_bus.emit(
+                EventType.ORDER_EXECUTION_STATE_UNKNOWN,
+                source="execution_api",
+                payload={**order_context, **result},
+            )
+            return result
 
-        _positions_repo.save_paper_trade(
-            venue=req.venue,
-            market=req.market,
-            side=side,
-            size=req.size,
-            price=fill_price,
-            order_type="limit",
-            status=result.get("status", "unknown"),
-        )
+        if result.get("execution_mode") == "paper":
+            fill_price = req.price or result.get("fill_price", 0.0)
+            _positions_repo.save_paper_trade(
+                venue=req.venue,
+                market=req.market,
+                side=side,
+                size=req.size,
+                price=fill_price,
+                order_type="limit",
+                status=result.get("status", "unknown"),
+            )
 
         return result
     except HTTPException:
@@ -187,6 +254,14 @@ def jupiter_quote(req: JupiterQuoteRequest):
 
 @router.post("/jupiter/swap")
 def jupiter_swap(req: JupiterSwapRequest):
+    if EXECUTION_MODE != "live" or not LIVE_EXECUTION_ENABLED:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "status": "blocked",
+                "message": "Jupiter swap execution requires EXECUTION_MODE=live and LIVE_EXECUTION_ENABLED=true",
+            },
+        )
     try:
         build_result = _jupiter.build_swap(req.quote_response)
         if build_result.get("status") == "error":
