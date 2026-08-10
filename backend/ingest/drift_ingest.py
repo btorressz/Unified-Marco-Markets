@@ -97,6 +97,7 @@ class DriftIngestor:
             venue=tick.venue,
             price=tick.price,
             confidence=tick.confidence,
+            ts=tick.ts,
         )
 
     def _store_funding(self, tick: FundingTick) -> None:
@@ -109,4 +110,5 @@ class DriftIngestor:
             venue=tick.venue,
             market=tick.market,
             funding_rate=tick.funding_rate,
+            ts=tick.ts,
         )
