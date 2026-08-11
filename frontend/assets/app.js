@@ -463,7 +463,7 @@ const App = (() => {
   }
 
   async function refreshStrategy() {
-    const [evaluation, status, adaptiveWeights, portfolio, allocation, mlPrediction, strategyPerformance, backtestResult, heuristicRegistry, heuristicPerformance] = await Promise.allSettled([
+    const [evaluation, status, adaptiveWeights, portfolio, allocation, mlPrediction, strategyPerformance, backtestResult, heuristicRegistry, heuristicPerformance, mlModels, mlActive, mlRuns, mlHealth, mlComparison] = await Promise.allSettled([
       API.getRulesEvaluation(),
       API.getRulesStatus(),
       API.getAdaptiveWeights(),
@@ -474,6 +474,7 @@ const App = (() => {
       API.getBacktestLatest(),
       API.getHeuristicRegistry(),
       API.getHeuristicPerformance(),
+      API.getMLModels(), API.getMLActiveModel(), API.getMLTrainingRuns(), API.getMLModelHealth(), API.getMLComparison(),
     ]);
     UI.renderStrategyTab({
       evaluation: evaluation.status === 'fulfilled' ? evaluation.value : null,
@@ -487,6 +488,11 @@ const App = (() => {
     if (strategyPerformance.status === 'fulfilled') UI.renderStrategyPerformance(strategyPerformance.value);
     if (heuristicRegistry.status === 'fulfilled') populateHeuristicRegistry(heuristicRegistry.value);
     if (heuristicPerformance.status === 'fulfilled') UI.renderHeuristicPerformance(heuristicPerformance.value);
+    UI.renderMLGovernance({
+      models: mlModels.status === 'fulfilled' ? mlModels.value.models : [], active: mlActive.status === 'fulfilled' ? mlActive.value.model : null,
+      runs: mlRuns.status === 'fulfilled' ? mlRuns.value.runs : [], health: mlHealth.status === 'fulfilled' ? mlHealth.value : {status:'unknown'},
+      comparison: mlComparison.status === 'fulfilled' ? mlComparison.value : {comparable:false,reason:'Unavailable'}
+    });
   }
 
   async function refreshExecution() {

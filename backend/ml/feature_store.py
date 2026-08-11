@@ -22,6 +22,10 @@ FEATURE_NAMES = [
     "exec_quality",
     "predictor_conf",
 ]
+FEATURE_SCHEMA_ID = "macro_signal_features"
+FEATURE_SCHEMA_VERSION = 1
+feature_schema_id = FEATURE_SCHEMA_ID
+feature_schema_version = FEATURE_SCHEMA_VERSION
 
 _VOL_REGIME_ENCODING = {
     "low": 0.0,
@@ -84,15 +88,42 @@ def build_features(state: dict[str, Any] | None = None) -> dict[str, Any]:
         "predictor_conf": round(predictor_conf, 4),
     }
 
+    # Status augments (rather than replaces) the ingestion lineage carried by
+    # snapshots.  A computed field is derived; supplied values are observed;
+    # invalid supplied values are fallbacks; absent inputs are explicit defaults.
+    source_keys = {"predictor_conf": "predictor_confidence", "vol_regime_encoded": "vol_regime"}
+    derived = {"shock_abs"}
+    provenance = {}
+    for name, value in features.items():
+        source = source_keys.get(name, name)
+        if name in derived:
+            status, reason = "derived", "derived_from_shock_score"
+        elif source not in state:
+            status, reason = "default", "source_unavailable"
+        else:
+            raw = state.get(source)
+            try:
+                valid = raw is not None and (source == "vol_regime" or math.isfinite(float(raw)))
+            except (TypeError, ValueError):
+                valid = False
+            status, reason = ("observed", "source_observation") if valid else ("fallback", "invalid_source_value")
+        provenance[name] = {"value": value, "status": status, "reason": reason}
+    counts = {s: sum(p["status"] == s for p in provenance.values()) for s in ("observed", "derived", "fallback", "default")}
+
     quality_checks = {
         "all_present": len(features) == len(FEATURE_NAMES),
         "no_nulls": all(v is not None for v in features.values()),
         "feature_count": len(features),
+        **{f"{key}_feature_count": value for key, value in counts.items()},
+        "default_feature_ratio": counts["default"] / len(FEATURE_NAMES),
     }
 
     return {
         "features": features,
         "feature_names": FEATURE_NAMES,
+        "feature_schema_id": FEATURE_SCHEMA_ID,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "feature_provenance": provenance,
         "quality": quality_checks,
         "ts": datetime.now(timezone.utc).isoformat(),
     }

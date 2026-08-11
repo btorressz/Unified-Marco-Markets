@@ -1026,7 +1026,7 @@ const UI = (() => {
     }
     const pred = data.prediction || {};
     const prob = pred.probability || 0;
-    const conf = pred.confidence || 0;
+    const conf = pred.prediction_strength || 0;
     const modelType = pred.model_type || 'heuristic';
     const probCls = prob >= 0.6 ? 'green' : prob <= 0.4 ? 'red' : 'yellow';
     const confCls = conf >= 0.7 ? 'green' : conf >= 0.5 ? 'yellow' : 'red';
@@ -1049,13 +1049,23 @@ const UI = (() => {
     panel.innerHTML = `
       <div class="metric-row">
         <div class="metric-box"><div class="metric-label">BTC Up Prob</div><div class="metric-value ${probCls}">${(prob*100).toFixed(1)}%</div></div>
-        <div class="metric-box"><div class="metric-label">Confidence</div><div class="metric-value ${confCls}">${(conf*100).toFixed(0)}%</div></div>
+        <div class="metric-box"><div class="metric-label">Prediction Strength</div><div class="metric-value ${confCls}">${(conf*100).toFixed(0)}%</div></div>
         <div class="metric-box"><div class="metric-label">Model</div><div class="metric-value blue" style="font-size:11px">${modelType.replace(/_/g,' ')}</div></div>
       </div>
       <div style="margin-top:10px;font-size:11px;color:var(--text-muted);margin-bottom:6px">Top Feature Drivers</div>
       ${driversHtml || '<div class="empty-state-text" style="font-size:11px">No driver data</div>'}
       <div style="margin-top:8px;font-size:10px;color:var(--text-muted)">${formatTimestamp(data.ts)}</div>
     `;
+  }
+
+  function renderMLGovernance(data) {
+    const panel=document.getElementById('ml-governance-panel'); if (!panel) return;
+    const active=data.active||{}, models=data.models||[], health=data.health||{}, comparison=data.comparison||{};
+    const rows=models.map(m=>`<tr><td>${safeValue(m.model_version)}</td><td><span class="status-badge ${m.lifecycle_state}">${safeValue(m.lifecycle_state).toUpperCase()}</span></td><td>${safeValue(m.model_type)}</td><td>${safeValue(m.dataset_id)}</td><td>${safeValue((m.validation_metrics||{}).brier)}</td><td>${safeValue(m.created_at)}</td></tr>`).join('');
+    panel.innerHTML=`<section><h3>Active Model</h3><strong>${safeValue(active.model_key)}:${safeValue(active.model_version)}</strong> <span class="status-badge active">${active.lifecycle_state?'ACTIVE':'NONE'}</span><div class="governance-detail">${safeValue(active.model_type)} · ${safeValue(active.feature_schema_id)} v${safeValue(active.feature_schema_version)} · label v${safeValue(active.label_definition_version)}<br>Dataset ${safeValue(active.dataset_id)} · run ${safeValue(active.training_run_id)}<br>Artifact ${safeValue(active.artifact_sha256)} · promoted ${safeValue(active.promoted_at)}</div></section>
+    <section><h3>Model Health</h3><div class="metric-value ${health.status==='healthy'?'green':health.status==='degraded'?'red':'yellow'}">${safeValue(health.status).toUpperCase()}</div><div class="governance-detail">Monitoring is read-only and never changes lifecycle state.</div></section>
+    <section class="governance-wide"><h3>Model Registry · Temporal Validation · Calibration</h3><div class="table-scroll"><table><thead><tr><th>Version</th><th>State</th><th>Method</th><th>Dataset</th><th>Brier</th><th>Created</th></tr></thead><tbody>${rows||'<tr><td colspan="6">No governed models</td></tr>'}</tbody></table></div></section>
+    <section><h3>Training Runs</h3><div class="governance-detail">${(data.runs||[]).length} durable governed run(s)</div></section><section><h3>Heuristic vs ML</h3><div class="governance-detail">${comparison.comparable?'Comparable aligned 24h window':safeValue(comparison.reason)}</div></section>`;
   }
 
   function renderBacktestPanel(data) {
@@ -1617,6 +1627,7 @@ const UI = (() => {
     renderFeedStatus,
     renderAllocationPanel,
     renderMLPanel,
+    renderMLGovernance,
     renderBacktestPanel,
     renderBacktestError,
     renderBacktestCoverage,
