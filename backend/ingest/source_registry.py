@@ -1,14 +1,24 @@
 """Code-defined, read-only registry of ingestion and feed sources."""
+from backend.core.state_keys import (
+    COINGECKO_SOL_USD,
+    COINGECKO_SOL_USD_NATIVE,
+    GDELT_LATEST,
+    KRAKEN_SOL_USD,
+    KRAKEN_SOL_USD_NATIVE,
+    PYTH_SOL_USD,
+    PYTH_SOL_USD_NATIVE,
+    WITS_AGGREGATE,
+)
 
 SOURCES = (
-    {"source_id": "pyth_sol_usd", "provider": "Pyth", "category": "market_price", "enabled": True, "expected_cadence_seconds": 30, "authoritative": True, "fallback_chain": ["kraken_sol_usd", "coingecko_sol_usd"], "storage_target": "market_ticks", "snapshot_key": "price:pyth:SOL/USD", "description": "Pyth SOL/USD oracle price."},
-    {"source_id": "kraken_sol_usd", "provider": "Kraken", "category": "market_price", "enabled": True, "expected_cadence_seconds": 30, "authoritative": False, "fallback_chain": ["coingecko_sol_usd"], "storage_target": "market_ticks", "snapshot_key": "price:kraken:SOLUSD", "description": "Kraken SOL/USD ticker."},
-    {"source_id": "coingecko_sol_usd", "provider": "CoinGecko", "category": "market_price", "enabled": True, "expected_cadence_seconds": 60, "authoritative": False, "fallback_chain": [], "storage_target": "market_ticks", "snapshot_key": "price:coingecko:SOLANA/USD", "description": "CoinGecko SOL/USD price."},
+    {"source_id": "pyth_sol_usd", "provider": "Pyth", "category": "market_price", "enabled": True, "expected_cadence_seconds": 30, "authoritative": True, "fallback_chain": ["kraken_sol_usd", "coingecko_sol_usd"], "storage_target": "market_ticks", "snapshot_key": PYTH_SOL_USD_NATIVE, "canonical_snapshot_key": PYTH_SOL_USD, "description": "Pyth SOL/USD oracle price."},
+    {"source_id": "kraken_sol_usd", "provider": "Kraken", "category": "market_price", "enabled": True, "expected_cadence_seconds": 30, "authoritative": False, "fallback_chain": ["coingecko_sol_usd"], "storage_target": "market_ticks", "snapshot_key": KRAKEN_SOL_USD_NATIVE, "canonical_snapshot_key": KRAKEN_SOL_USD, "description": "Kraken SOL/USD ticker."},
+    {"source_id": "coingecko_sol_usd", "provider": "CoinGecko", "category": "market_price", "enabled": True, "expected_cadence_seconds": 60, "authoritative": False, "fallback_chain": [], "storage_target": "market_ticks", "snapshot_key": COINGECKO_SOL_USD_NATIVE, "canonical_snapshot_key": COINGECKO_SOL_USD, "description": "CoinGecko SOL/USD price."},
     {"source_id": "hyperliquid_sol_usd", "provider": "Hyperliquid", "category": "websocket_market_price", "enabled": True, "expected_cadence_seconds": 60, "authoritative": False, "fallback_chain": [], "storage_target": "redis_snapshot", "snapshot_key": "price:hyperliquid:SOL/USD", "description": "Hyperliquid SOL/USD websocket midpoint snapshot."},
     {"source_id": "drift_sol_perp", "provider": "Drift", "category": "market_price", "enabled": True, "expected_cadence_seconds": 60, "authoritative": False, "fallback_chain": [], "storage_target": "market_ticks", "snapshot_key": "price:drift:SOL-PERP", "description": "Drift SOL perpetual mark price."},
     {"source_id": "drift_funding_sol_perp", "provider": "Drift", "category": "funding", "enabled": True, "expected_cadence_seconds": 60, "authoritative": True, "fallback_chain": [], "storage_target": "funding_ticks", "snapshot_key": "funding:drift:SOL-PERP", "description": "Drift SOL perpetual funding rate."},
-    {"source_id": "wits_tariffs", "provider": "WITS", "category": "macro", "enabled": True, "expected_cadence_seconds": 21600, "authoritative": True, "fallback_chain": [], "storage_target": "redis_snapshot", "snapshot_key": "wits:tariff:aggregate", "description": "World Bank WITS tariff ingestion aggregate freshness."},
-    {"source_id": "gdelt_macro_news", "provider": "GDELT", "category": "macro_news", "enabled": True, "expected_cadence_seconds": 300, "authoritative": False, "fallback_chain": [], "storage_target": "redis_snapshot", "snapshot_key": "gdelt:latest", "description": "GDELT macro-news observations."},
+    {"source_id": "wits_tariffs", "provider": "WITS", "category": "macro", "enabled": True, "expected_cadence_seconds": 21600, "authoritative": True, "fallback_chain": [], "storage_target": "redis_snapshot", "snapshot_key": WITS_AGGREGATE, "description": "World Bank WITS tariff ingestion aggregate freshness."},
+    {"source_id": "gdelt_macro_news", "provider": "GDELT", "category": "macro_news", "enabled": True, "expected_cadence_seconds": 300, "authoritative": False, "fallback_chain": [], "storage_target": "redis_snapshot", "snapshot_key": GDELT_LATEST, "description": "GDELT macro-news observations."},
 )
 
 SOURCE_REGISTRY = {source["source_id"]: source for source in SOURCES}
