@@ -344,7 +344,25 @@
           <div class="empty-state"><div class="empty-state-text">Loading ML prediction...</div></div>
         </div>
 
-        <div class="section-title">Strategy Performance</div>
+        <div class="section-title">Heuristic Performance Lab</div>
+        <div class="card heuristic-lab">
+          <div class="research-warning"><strong>HISTORICAL HEURISTIC VALIDATION</strong><br>Evaluates immutable deterministic rule versions against persisted event-time data. Does not modify rules, weights, or execution behavior. No synthetic fallback.</div>
+          <form id="heuristic-performance-form" class="inline-form">
+            <div class="form-group"><label class="form-label">Heuristic</label><select name="heuristic_id" id="heuristic-selector" class="form-select"><option value="">All Active</option></select></div>
+            <div class="form-group"><label class="form-label">Venue</label><select name="venue" class="form-select"><option value="drift">Drift</option><option value="pyth">Pyth</option><option value="kraken">Kraken</option><option value="coingecko">CoinGecko</option></select></div>
+            <div class="form-group"><label class="form-label">Market</label><input name="market" value="SOL-PERP" class="form-input"></div>
+            <div class="form-group"><label class="form-label">Historical Symbol</label><input name="symbol" value="SOL-PERP" class="form-input"></div>
+            <div class="form-group"><label class="form-label">Window Days</label><input name="window_days" value="90" min="1" max="3650" type="number" class="form-input"></div>
+            <div class="form-group"><label class="form-label">Start Date/Time</label><input name="start_ts" type="datetime-local" class="form-input"></div>
+            <div class="form-group"><label class="form-label">End Date/Time</label><input name="end_ts" type="datetime-local" class="form-input"></div>
+            <div class="form-group"><label class="form-label">Primary Horizon</label><select name="primary_horizon" class="form-select"><option>1h</option><option>4h</option><option selected>24h</option><option>7d</option></select></div>
+            <div class="form-group"><label class="form-label">Decision Interval (sec)</label><input name="decision_interval_seconds" value="3600" min="60" type="number" class="form-input"></div>
+            <div class="form-group"><button type="submit" class="btn btn-primary">Run Historical Validation</button></div>
+          </form>
+          <div id="heuristic-performance-panel" class="heuristic-results"><div class="empty-state-text">Loading persisted heuristic performance...</div></div>
+        </div>
+
+        <div class="section-title">Executed Strategy Performance</div>
         <div class="card" id="strategy-performance-panel">
           <div class="empty-state"><div class="empty-state-text">Loading strategy performance...</div></div>
         </div>

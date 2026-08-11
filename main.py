@@ -82,6 +82,7 @@ def create_app():
     from backend.api.allocation_routes import router as allocation_router
     from backend.api.ml_routes import router as ml_router
     from backend.api.backtest_routes import router as backtest_router
+    from backend.api.heuristic_routes import router as heuristic_router
     from backend.api.volatility_routes import router as volatility_router
     from backend.api.portfolio_risk_routes import router as portfolio_risk_router
     from backend.api.equities_routes import router as equities_router
@@ -128,6 +129,7 @@ def create_app():
     app.include_router(allocation_router)
     app.include_router(ml_router)
     app.include_router(backtest_router)
+    app.include_router(heuristic_router)
     app.include_router(volatility_router)
     app.include_router(portfolio_risk_router)
     app.include_router(equities_router)

@@ -96,6 +96,10 @@ const API = (() => {
 
     getRulesEvaluation: () => fetchJSON('/api/rules/evaluate'),
     getRulesStatus: () => fetchJSON('/api/rules/status'),
+    getHeuristicRegistry: () => fetchJSON('/api/heuristics/registry'),
+    postHeuristicEvaluate: (config) => postJSON('/api/heuristics/evaluate', config),
+    getHeuristicPerformance: (params = {}) => fetchJSON(`/api/heuristics/performance?${new URLSearchParams(Object.entries(params).filter(([, value]) => value !== undefined && value !== null)).toString()}`),
+    getHeuristicEvaluations: (params = {}) => fetchJSON(`/api/heuristics/evaluations?${new URLSearchParams(Object.entries(params).filter(([, value]) => value !== undefined && value !== null)).toString()}`),
 
     getPositions: () => fetchJSON('/api/execution/positions'),
     getPaperTrades: () => fetchJSON('/api/execution/paper-trades'),

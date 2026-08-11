@@ -272,3 +272,20 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_backtest_runs_created_at ON backtest_runs (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_backtest_runs_mode ON backtest_runs (mode);
+
+-- Auditable research observations for immutable deterministic heuristic versions.
+CREATE TABLE IF NOT EXISTS heuristic_evaluations (
+ id UUID PRIMARY KEY DEFAULT gen_random_uuid(), heuristic_id VARCHAR(100) NOT NULL,
+ heuristic_version INTEGER NOT NULL, evaluation_type VARCHAR(30) NOT NULL, action_type VARCHAR(50) NOT NULL,
+ expected_direction VARCHAR(20), venue VARCHAR(50) NOT NULL, market VARCHAR(100) NOT NULL, symbol VARCHAR(100),
+ decision_ts TIMESTAMPTZ NOT NULL, price_at_decision DOUBLE PRECISION NOT NULL, fired BOOLEAN NOT NULL,
+ confidence DOUBLE PRECISION, expected_return DOUBLE PRECISION, context JSONB NOT NULL DEFAULT '{}',
+ regime JSONB NOT NULL DEFAULT '{}', outcomes JSONB NOT NULL DEFAULT '{}', primary_horizon VARCHAR(10) NOT NULL,
+ primary_return DOUBLE PRECISION, signed_primary_return DOUBLE PRECISION, directional_hit BOOLEAN,
+ evaluation_status VARCHAR(30) NOT NULL, missing_context JSONB NOT NULL DEFAULT '[]', source VARCHAR(50) NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ CONSTRAINT uq_heuristic_opportunity UNIQUE (heuristic_id, heuristic_version, venue, market, decision_ts, primary_horizon),
+ CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1))
+);
+CREATE INDEX IF NOT EXISTS idx_heuristic_eval_rule_window ON heuristic_evaluations (heuristic_id, heuristic_version, decision_ts DESC);
+CREATE INDEX IF NOT EXISTS idx_heuristic_eval_market_window ON heuristic_evaluations (venue, market, decision_ts DESC);

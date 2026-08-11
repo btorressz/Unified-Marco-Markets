@@ -21,6 +21,7 @@ const App = (() => {
     initStressTestForm();
     initMCForm();
     initBacktestForm();
+    initHeuristicPerformanceLab();
     initReplaySimForm();
     initScenarioForm();
     initGeoScenarioForm();
@@ -429,8 +430,39 @@ const App = (() => {
     });
   }
 
+  function populateHeuristicRegistry(data) {
+    const selector = document.getElementById('heuristic-selector');
+    if (!selector || selector.dataset.loaded) return;
+    (data.heuristics || []).filter(rule => rule.active).forEach(rule => selector.add(new Option(`${rule.id}:v${rule.version}`, rule.id)));
+    selector.dataset.loaded = 'true';
+  }
+
+  function initHeuristicPerformanceLab() {
+    const form = document.getElementById('heuristic-performance-form');
+    if (!form) return;
+    form.venue.addEventListener('change', () => { if (historicalSymbolDefaults[form.venue.value]) form.symbol.value = historicalSymbolDefaults[form.venue.value]; });
+    form.addEventListener('submit', async event => {
+      event.preventDefault(); const button = form.querySelector('button[type="submit"]');
+      const config = { heuristic_ids: form.heuristic_id.value ? [form.heuristic_id.value] : [], venue: form.venue.value,
+        market: form.market.value.trim(), symbol: form.symbol.value.trim(), window_days: Number(form.window_days.value),
+        primary_horizon: form.primary_horizon.value, decision_interval_seconds: Number(form.decision_interval_seconds.value), persist: true };
+      if (form.start_ts.value) config.start_ts = new Date(form.start_ts.value).toISOString();
+      if (form.end_ts.value) config.end_ts = new Date(form.end_ts.value).toISOString();
+      try {
+        button.disabled = true; button.textContent = 'Validating...';
+        UI.renderHeuristicPerformance(await API.postHeuristicEvaluate(config));
+        await refreshHeuristicPerformance();
+      } catch (error) { UI.renderHeuristicPerformanceError(error.message); }
+      finally { button.disabled = false; button.textContent = 'Run Historical Validation'; }
+    });
+  }
+
+  async function refreshHeuristicPerformance() {
+    try { UI.renderHeuristicPerformance(await API.getHeuristicPerformance()); } catch (_) { /* Optional persisted research read. */ }
+  }
+
   async function refreshStrategy() {
-    const [evaluation, status, adaptiveWeights, portfolio, allocation, mlPrediction, strategyPerformance, backtestResult] = await Promise.allSettled([
+    const [evaluation, status, adaptiveWeights, portfolio, allocation, mlPrediction, strategyPerformance, backtestResult, heuristicRegistry, heuristicPerformance] = await Promise.allSettled([
       API.getRulesEvaluation(),
       API.getRulesStatus(),
       API.getAdaptiveWeights(),
@@ -439,6 +471,8 @@ const App = (() => {
       API.getMLPredictionLatest(),
       API.getStrategyPerformance(),
       API.getBacktestLatest(),
+      API.getHeuristicRegistry(),
+      API.getHeuristicPerformance(),
     ]);
     UI.renderStrategyTab({
       evaluation: evaluation.status === 'fulfilled' ? evaluation.value : null,
@@ -450,6 +484,8 @@ const App = (() => {
       backtestResult: backtestResult.status === 'fulfilled' ? backtestResult.value : undefined,
     });
     if (strategyPerformance.status === 'fulfilled') UI.renderStrategyPerformance(strategyPerformance.value);
+    if (heuristicRegistry.status === 'fulfilled') populateHeuristicRegistry(heuristicRegistry.value);
+    if (heuristicPerformance.status === 'fulfilled') UI.renderHeuristicPerformance(heuristicPerformance.value);
   }
 
   async function refreshExecution() {

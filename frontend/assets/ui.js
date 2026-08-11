@@ -1581,6 +1581,17 @@ const UI = (() => {
     panel.innerHTML=`<div class="risk-breakdown-grid"><div>${stat('Venue Exposure',Object.entries(byVenue).map(([k,v])=>`${escapeHtml(k)} ${safeMoney(v)}`).join('<br>')||'--')}</div><div>${stat('Asset Exposure',Object.entries(byAsset).map(([k,v])=>`${escapeHtml(k)} ${safeMoney(v)}`).join('<br>')||'--')}</div></div><div class="table-scroll"><table><thead><tr><th>Market</th><th>Venue</th><th>Side</th><th>Notional</th><th>Risk Contribution</th><th>Risk Contribution %</th><th>Vol Estimate</th></tr></thead><tbody>${rows.map(c=>`<tr><td>${safeValue(c.market)}</td><td>${safeValue(c.venue)}</td><td>${safeValue(c.side)}</td><td>${safeMoney(c.notional)}</td><td>${safeValue(c.risk_contribution)}</td><td>${safeValue(c.risk_contribution_pct)}</td><td>${safeValue(c.vol_estimate)}</td></tr>`).join('')||'<tr><td colspan="7">No risk contributions available.</td></tr>'}</tbody></table></div>`;
   }
 
+  function renderHeuristicPerformance(data) {
+    const panel = document.getElementById('heuristic-performance-panel'); if (!panel) return;
+    const rows = data.heuristics || data.performance || [];
+    const pct = value => value === null || value === undefined ? 'N/A' : `${(Number(value) * 100).toFixed(1)}%`;
+    const num = value => value === null || value === undefined ? 'N/A' : Number(value).toFixed(2);
+    const table = `<div class="table-scroll"><table><thead><tr><th>Heuristic</th><th>Ver</th><th>Status</th><th>Accuracy</th><th>Precision</th><th>Recall</th><th>Hit Rate</th><th>Avg Return</th><th>Sharpe</th><th>Max DD</th><th>Samples</th></tr></thead><tbody>${rows.map(row => { const m=row.metrics||{}; const n=m.fired_count||0; const badge=n<10?'LOW SAMPLE':n<100?'MODERATE SAMPLE':'STRONG SAMPLE'; return `<tr class="heuristic-row"><td>${escapeHtml(row.id||row.name)}</td><td>v${row.version}</td><td>${escapeHtml(row.evaluation_status||'N/A')}</td><td>${pct(m.directional_accuracy)}</td><td>${pct(m.precision)}</td><td>${pct(m.recall)}</td><td>${pct(m.hit_rate)}</td><td>${pct(m.average_signed_return)}</td><td>${num(m.signal_return_sharpe)}</td><td>${pct(m.signal_return_max_drawdown)}</td><td><span class="sample-badge">${badge}</span> n=${n}<br>${m.evaluable_count||0} opportunities</td></tr>`; }).join('') || '<tr><td colspan="11">No persisted evaluations. Run historical validation manually.</td></tr>'}</tbody></table></div>`;
+    const detail = rows.map(row => { const m=row.metrics||{}; const regimes=m.performance_by_regime||{}; const decay=m.performance_decay||{}; return `<details class="heuristic-detail"><summary>${escapeHtml(row.id||row.name)}:v${row.version} — ${escapeHtml(row.evaluation_status||'N/A')}</summary><div class="metric-row"><div class="metric-box"><div class="metric-label">Decision Opportunities</div><div class="metric-value">${m.opportunity_count||0}</div></div><div class="metric-box"><div class="metric-label">Evaluable Opportunities</div><div class="metric-value">${m.evaluable_count||0}</div></div><div class="metric-box"><div class="metric-label">Signals Fired</div><div class="metric-value">${m.fired_count||0}</div></div><div class="metric-box"><div class="metric-label">Brier Score</div><div class="metric-value">${num(m.brier_score)}</div><small>${m.brier_score==null?'Rule does not emit a calibrated probability.':`${m.calibration_sample_count} calibration samples`}</small></div></div><p><strong>Required Context:</strong> ${(row.required_context||[]).map(escapeHtml).join(', ')||'N/A'} · <strong>Missing:</strong> ${(row.missing_context||[]).map(escapeHtml).join(', ')||'none'}</p><h4>Outcome by Horizon</h4>${Object.entries(m.outcome_by_horizon||{}).map(([h,s])=>`${h}: n=${s.fired_count||0}, hit ${pct(s.hit_rate)}, avg signed ${pct(s.average_signed_return)}`).join('<br>')||'N/A'}<h4>Performance by Regime</h4>${Object.entries(regimes).map(([field,groups])=>`<strong>${escapeHtml(field)}</strong>: ${Object.entries(groups).map(([name,s])=>`${escapeHtml(name)} n=${s.fired_count||0}, hit ${pct(s.hit_rate)}`).join(' · ')||'N/A'}`).join('<br>')||'N/A'}<h4>Performance Decay</h4>${decay.available?`Recent 30d ${pct(decay.recent_30d?.hit_rate)} vs prior 30d ${pct(decay.prior_30d?.hit_rate)}`:'Insufficient history for decay analysis'}</details>`; }).join('');
+    panel.innerHTML = table + detail;
+  }
+  function renderHeuristicPerformanceError(message) { const panel=document.getElementById('heuristic-performance-panel'); if(panel) panel.innerHTML=`<div class="research-warning error">${escapeHtml(message)}<br>No synthetic fallback was used.</div>`; }
+
   return {
     formatTimestamp,
     formatNumber,
@@ -1617,6 +1628,8 @@ const UI = (() => {
     renderGeoScenarioResult,
     renderEquitiesTab,
     renderStrategyPerformance,
+    renderHeuristicPerformance,
+    renderHeuristicPerformanceError,
     renderExecutionEnhancements,
     renderReplaySimulation,
     renderAgentMemory,

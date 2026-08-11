@@ -6,31 +6,46 @@ class RulesEngine:
     def __init__(self):
         self.rules = [
             {
+                "id": "tariff_vol_reduce", "version": 1, "active": True,
                 "name": "tariff_vol_reduce",
+                "evaluation_type": "directional", "expected_direction": "bearish",
+                "required_context": ["tariff_rate_of_change", "vol_regime"], "expected_return": None,
                 "condition": self._tariff_vol_condition,
                 "action_type": "reduce_exposure",
                 "explanation": "Tariff index rate_of_change > 5 and vol regime is high -> reduce exposure",
             },
             {
+                "id": "shock_throttle", "version": 1, "active": True,
                 "name": "shock_throttle",
+                "evaluation_type": "risk_control", "expected_direction": None,
+                "required_context": ["shock_score"], "expected_return": None,
                 "condition": self._shock_condition,
                 "action_type": "enable_risk_throttle",
                 "explanation": "Shock score > 2.0 -> enable risk throttle",
             },
             {
+                "id": "divergence_hedge", "version": 1, "active": True,
                 "name": "divergence_hedge",
+                "evaluation_type": "directional", "expected_direction": "bearish",
+                "required_context": ["divergence_alert_active", "funding_regime_flipped"], "expected_return": None,
                 "condition": self._divergence_hedge_condition,
                 "action_type": "hedge",
                 "explanation": "Divergence alert active and funding regime flipped -> hedge",
             },
             {
+                "id": "negative_carry_reduce", "version": 1, "active": True,
                 "name": "negative_carry_reduce",
+                "evaluation_type": "directional", "expected_direction": "bearish",
+                "required_context": ["carry_score"], "expected_return": None,
                 "condition": self._negative_carry_condition,
                 "action_type": "reduce_long_perp",
                 "explanation": "Carry score very negative -> reduce long perp",
             },
             {
+                "id": "stable_rotation", "version": 1, "active": True,
                 "name": "stable_rotation",
+                "evaluation_type": "directional", "expected_direction": "bearish",
+                "required_context": ["shock_score", "tariff_rate_of_change"], "expected_return": None,
                 "condition": self._stable_rotation_condition,
                 "action_type": "rotate_to_stables",
                 "explanation": "Tariff shock high -> rotate to 80% stables, reduce beta to 0.2",
@@ -43,6 +58,10 @@ class RulesEngine:
             if rule["condition"](context):
                 actions.append({
                     "rule_name": rule["name"],
+                    "rule_id": rule["id"],
+                    "rule_version": rule["version"],
+                    "evaluation_type": rule["evaluation_type"],
+                    "expected_direction": rule["expected_direction"],
                     "action_type": rule["action_type"],
                     "venue": context.get("venue", ""),
                     "market": context.get("market", ""),

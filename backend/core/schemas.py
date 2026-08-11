@@ -54,6 +54,10 @@ class AlertResponse(BaseModel):
 
 class RuleActionResponse(BaseModel):
     rule_name: str
+    rule_id: str | None = None
+    rule_version: int | None = None
+    evaluation_type: str | None = None
+    expected_direction: str | None = None
     action_type: str
     venue: str
     market: str
