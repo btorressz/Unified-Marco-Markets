@@ -32,6 +32,25 @@ PYTH_SOL_USD = price_snapshot_key("pyth", "SOL/USD")
 KRAKEN_SOL_USD = price_snapshot_key("kraken", "SOL/USD")
 COINGECKO_SOL_USD = price_snapshot_key("coingecko", "SOL/USD")
 
+_SOL_USD_NATIVE_BY_VENUE = {
+    "pyth": PYTH_SOL_USD_NATIVE,
+    "kraken": KRAKEN_SOL_USD_NATIVE,
+    "coingecko": COINGECKO_SOL_USD_NATIVE,
+}
+
+
+def price_snapshot_candidates(venue: str, symbol: str) -> tuple[str, ...]:
+    """Return canonical-first keys with a known source-native compatibility key."""
+    venue_key = str(venue).lower().strip()
+    canonical = price_snapshot_key(venue_key, symbol)
+    keys = [canonical]
+    if normalize_price_symbol(symbol) == "SOL_USD":
+        native = _SOL_USD_NATIVE_BY_VENUE.get(venue_key)
+        if native and native not in keys:
+            keys.append(native)
+    return tuple(keys)
+
+
 PRICE_INTEGRITY = "price:integrity"
 PRICE_INTEGRITY_LEGACY_LATEST = "price:integrity:latest"
 
@@ -43,6 +62,7 @@ STABLECOIN_HEALTH = "stablecoin:health:latest"
 STABLECOIN_HEALTH_LEGACY = "stablecoin:health"
 
 PREDICTION_LATEST = "prediction:latest"
+PREDICTION_LATEST_LEGACY = "predict:latest"
 
 
 def prediction_symbol_key(symbol: str) -> str:
