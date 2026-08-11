@@ -82,6 +82,12 @@ def get_guardrails():
             "max_daily_loss": config.MAX_DAILY_LOSS,
             "cooldown_seconds": config.COOLDOWN_SECONDS,
             "execution_mode": config.EXECUTION_MODE,
+            "live_execution_enabled": config.LIVE_EXECUTION_ENABLED,
+            "supported_execution_venues": config.SUPPORTED_EXECUTION_VENUES,
+            "supported_execution_markets": config.SUPPORTED_EXECUTION_MARKETS,
+            "supported_order_types": config.SUPPORTED_ORDER_TYPES,
+            "max_order_notional": config.MAX_ORDER_NOTIONAL,
+            "max_order_slippage_bps": config.MAX_ORDER_SLIPPAGE_BPS,
             "ts": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as exc:
