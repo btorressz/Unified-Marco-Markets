@@ -1,4 +1,5 @@
 import logging
+import math
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -102,7 +103,21 @@ def _reject_order(code: str, message: str) -> None:
     )
 
 
+def _require_finite(name: str, value: float | None) -> None:
+    if value is None:
+        return
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        _reject_order(f"invalid_{name}", f"{name} must be numeric")
+    if not math.isfinite(numeric):
+        _reject_order(f"invalid_{name}", f"{name} must be finite")
+
+
 def _validate_order_request(req: OrderRequest) -> None:
+    _require_finite("size", req.size)
+    _require_finite("price", req.price)
+    _require_finite("slippage", req.slippage_bps)
     if req.venue not in SUPPORTED_EXECUTION_VENUES:
         _reject_order("unsupported_venue", f"Unsupported execution venue '{req.venue}'")
     if req.market not in SUPPORTED_EXECUTION_MARKETS:
@@ -130,6 +145,8 @@ def _validate_order_request(req: OrderRequest) -> None:
 
 
 def _validate_conditional_request(req: ConditionalOrderRequest) -> None:
+    for name in ("size", "trigger_price", "limit_price", "trailing_amount", "take_profit_price", "stop_loss_price"):
+        _require_finite(name, getattr(req, name))
     if req.venue not in SUPPORTED_EXECUTION_VENUES:
         _reject_order("unsupported_venue", f"Unsupported execution venue '{req.venue}'")
     if req.market not in SUPPORTED_EXECUTION_MARKETS:
@@ -255,77 +272,31 @@ def _persist_execution_result(
     base_payload = {**order_context, **result}
 
     if status == "blocked":
-        _record_lifecycle(
-            EventType.ORDER_REJECTED,
-            payload=base_payload,
-            intent_id=intent_id,
-            order_id=order_id,
-        )
+        _record_lifecycle(EventType.ORDER_REJECTED, payload=base_payload, intent_id=intent_id, order_id=order_id)
         return result
 
     if status == "agent_blocked":
-        _record_lifecycle(
-            EventType.ORDER_RISK_APPROVED,
-            payload=base_payload,
-            intent_id=intent_id,
-            order_id=order_id,
-        )
-        _record_lifecycle(
-            EventType.ORDER_REJECTED,
-            payload=base_payload,
-            intent_id=intent_id,
-            order_id=order_id,
-        )
+        _record_lifecycle(EventType.ORDER_RISK_APPROVED, payload=base_payload, intent_id=intent_id, order_id=order_id)
+        _record_lifecycle(EventType.ORDER_REJECTED, payload=base_payload, intent_id=intent_id, order_id=order_id)
         return result
 
-    _record_lifecycle(
-        EventType.ORDER_RISK_APPROVED,
-        payload=base_payload,
-        intent_id=intent_id,
-        order_id=order_id,
-    )
-    _record_lifecycle(
-        EventType.ORDER_SUBMITTED,
-        payload=base_payload,
-        intent_id=intent_id,
-        order_id=order_id,
-    )
+    _record_lifecycle(EventType.ORDER_RISK_APPROVED, payload=base_payload, intent_id=intent_id, order_id=order_id)
+    _record_lifecycle(EventType.ORDER_SUBMITTED, payload=base_payload, intent_id=intent_id, order_id=order_id)
 
     if status == "execution_state_unknown":
-        _record_lifecycle(
-            EventType.ORDER_SUBMISSION_UNKNOWN,
-            payload=base_payload,
-            intent_id=intent_id,
-            order_id=order_id,
-        )
+        _record_lifecycle(EventType.ORDER_SUBMISSION_UNKNOWN, payload=base_payload, intent_id=intent_id, order_id=order_id)
         return result
 
     if status in ("submitted", "open", "partially_filled", "filled", "paper_filled"):
-        _record_lifecycle(
-            EventType.ORDER_ACKNOWLEDGED,
-            payload=base_payload,
-            intent_id=intent_id,
-            order_id=order_id,
-        )
+        _record_lifecycle(EventType.ORDER_ACKNOWLEDGED, payload=base_payload, intent_id=intent_id, order_id=order_id)
 
     if status in ("open", "partially_filled"):
-        _record_lifecycle(
-            EventType.ORDER_OPEN,
-            payload=base_payload,
-            intent_id=intent_id,
-            order_id=order_id,
-        )
+        _record_lifecycle(EventType.ORDER_OPEN, payload=base_payload, intent_id=intent_id, order_id=order_id)
 
     if status == "partially_filled":
-        _record_lifecycle(
-            EventType.ORDER_PARTIALLY_FILLED,
-            payload=base_payload,
-            intent_id=intent_id,
-            order_id=order_id,
-        )
+        _record_lifecycle(EventType.ORDER_PARTIALLY_FILLED, payload=base_payload, intent_id=intent_id, order_id=order_id)
 
     if status in ("filled", "paper_filled"):
-        # PaperExecutor already emits ORDER_FILLED to the general event bus.
         _record_lifecycle(
             EventType.ORDER_FILLED,
             payload=base_payload,
@@ -355,12 +326,7 @@ def _persist_execution_result(
                 )
 
             remaining_size = float(accounting.get("remaining_quantity", 0.0) or 0.0)
-            entry_price = float(
-                accounting.get("average_entry")
-                or result.get("fill_price")
-                or req.price
-                or 0.0
-            )
+            entry_price = float(accounting.get("average_entry") or result.get("fill_price") or req.price or 0.0)
             _positions_repo.save_position(
                 venue=req.venue,
                 market=req.market,
@@ -389,6 +355,18 @@ class JupiterSwapRequest(BaseModel):
     quote_response: dict
 
 
+def _is_live_risk_reduction(req: OrderRequest) -> bool:
+    if _exec_router.mode != "live":
+        return False
+    try:
+        return _exec_router.risk_engine._is_reducing(
+            _exec_router._get_risk_positions(),
+            {"venue": req.venue, "market": req.market, "side": req.side, "size": req.size},
+        )
+    except Exception:
+        return False
+
+
 @router.post("/order")
 def place_order(req: OrderRequest):
     try:
@@ -405,18 +383,32 @@ def place_order(req: OrderRequest):
             "idempotency_key": idempotency_key,
         }
 
-        idempotency_status = "degraded"
-        if _state_store.get_redis() is not None:
-            if not _state_store.set_idempotency_key(idempotency_key, ttl=300):
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "status": "duplicate",
-                        "message": "Duplicate execution request rejected",
-                        **order_context,
-                    },
-                )
-            idempotency_status = "claimed"
+        live_risk_reduction = _is_live_risk_reduction(req)
+        live_new_exposure = _exec_router.mode == "live" and not live_risk_reduction
+
+        idempotency_status = _state_store.claim_idempotency_status(
+            idempotency_key,
+            ttl=300,
+            request_id=request_id,
+            owner="execution_api",
+        )
+        if idempotency_status == "duplicate":
+            raise HTTPException(
+                status_code=409,
+                detail={"status": "duplicate", "message": "Duplicate execution request rejected", **order_context},
+            )
+        if idempotency_status == "unavailable" and live_new_exposure:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "blocked",
+                    "code": "live_idempotency_unavailable",
+                    "message": "Live new exposure requires an available idempotency store",
+                    **order_context,
+                },
+            )
+        if idempotency_status == "unavailable":
+            idempotency_status = "degraded"
 
         intent = _orders_repo.create_intent(
             request_id=request_id,
@@ -433,6 +425,18 @@ def place_order(req: OrderRequest):
             payload={"slippage_bps": req.slippage_bps},
         )
         persistence_status = "persisted" if intent else "degraded"
+        if live_new_exposure and not intent:
+            if idempotency_status == "claimed":
+                _state_store.release_idempotency(idempotency_key)
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "blocked",
+                    "code": "live_audit_persistence_unavailable",
+                    "message": "Live new exposure requires durable order-intent persistence",
+                    **order_context,
+                },
+            )
 
         intent_payload = {
             **order_context,
@@ -445,6 +449,7 @@ def place_order(req: OrderRequest):
             "slippage_bps": req.slippage_bps,
             "idempotency_status": idempotency_status,
             "persistence_status": persistence_status,
+            "risk_reducing": live_risk_reduction,
         }
         _record_lifecycle(
             EventType.ORDER_INTENT_CREATED,
@@ -469,8 +474,6 @@ def place_order(req: OrderRequest):
             raise HTTPException(status_code=403, detail=result)
 
         if result.get("status") == "execution_state_unknown":
-            # Preserve the PR #5 compatibility event while the durable lifecycle
-            # uses the more precise ORDER_SUBMISSION_UNKNOWN name.
             _exec_router.event_bus.emit(
                 EventType.ORDER_EXECUTION_STATE_UNKNOWN,
                 source="execution_api",
@@ -490,10 +493,7 @@ def get_positions():
     try:
         positions = _exec_router.get_all_positions()
         db_positions = _positions_repo.get_all()
-        return {
-            "live_positions": positions,
-            "db_positions": db_positions,
-        }
+        return {"live_positions": positions, "db_positions": db_positions}
     except Exception as exc:
         logger.error("Error fetching positions: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch positions")
@@ -502,7 +502,6 @@ def get_positions():
 @router.get("/paper-trades")
 def get_paper_trades():
     try:
-        # Legacy history remains readable while new writes use orders/fills/paper_orders.
         trades = _positions_repo.get_paper_trades(limit=50)
         return {"trades": trades, "count": len(trades), "legacy": True}
     except Exception as exc:
@@ -578,20 +577,14 @@ def create_conditional_order(req: ConditionalOrderRequest):
             "status": "parent_bracket",
             "trigger_key": None,
             "current_trigger_level": None,
-            "payload": {
-                "take_profit_price": req.take_profit_price,
-                "stop_loss_price": req.stop_loss_price,
-            },
+            "payload": {"take_profit_price": req.take_profit_price, "stop_loss_price": req.stop_loss_price},
         }
         saved_parent = _orders_repo.create_conditional_order(parent)
         if not saved_parent:
             raise HTTPException(status_code=503, detail={"status": "error", "message": "Conditional order persistence unavailable"})
 
         children = []
-        for child_type, trigger_price in (
-            ("take_profit", req.take_profit_price),
-            ("stop_loss", req.stop_loss_price),
-        ):
+        for child_type, trigger_price in (("take_profit", req.take_profit_price), ("stop_loss", req.stop_loss_price)):
             child = {
                 "id": str(uuid.uuid4()),
                 "venue": req.venue,
@@ -715,10 +708,7 @@ def evaluate_conditional_orders(body: dict[str, Any] | None = None):
                 )
             )
         except HTTPException as exc:
-            _orders_repo.release_conditional_claim(
-                order_id,
-                payload={"last_trigger_error": exc.detail},
-            )
+            _orders_repo.release_conditional_claim(order_id, payload={"last_trigger_error": exc.detail})
             warnings.append({"id": order_id, "warning": "triggered execution was rejected", "detail": exc.detail})
             continue
 
@@ -737,12 +727,7 @@ def evaluate_conditional_orders(body: dict[str, Any] | None = None):
         triggered.append(updated or {**claimed, "triggered_order": result})
 
     orders = _orders_repo.list_conditional_orders()
-    return {
-        "triggered": triggered,
-        "warnings": warnings,
-        "orders": orders,
-        "ts": datetime.now(timezone.utc).isoformat(),
-    }
+    return {"triggered": triggered, "warnings": warnings, "orders": orders, "ts": datetime.now(timezone.utc).isoformat()}
 
 
 @router.delete("/conditional-order/{order_id}")
@@ -755,6 +740,9 @@ def delete_conditional_order(order_id: str):
 
 @router.post("/smart-order")
 def smart_order(req: SmartOrderRequest):
+    _require_finite("total_size", req.total_size)
+    _require_finite("max_slippage_bps", req.max_slippage_bps)
+    _require_finite("reference_price", req.reference_price)
     return create_smart_order(req.venue, req.market, req.side, req.total_size, req.n_slices, req.interval_seconds, req.mode, req.max_slippage_bps, req.reference_price or 0.0)
 
 
