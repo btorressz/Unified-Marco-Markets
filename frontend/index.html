@@ -359,49 +359,45 @@
           <div id="replay-sim-panel" style="margin-top:12px"><div class="empty-state"><div class="empty-state-text">Submit form to simulate proposal-only trade decisions</div></div></div>
         </div>
 
-        <div class="section-title">Historical Backtest</div>
+        <div class="section-title">Backtest Lab</div>
         <div class="card">
+          <div id="backtest-mode-banner" class="research-warning"></div>
           <form id="backtest-form" class="inline-form">
-            <div class="form-group">
-              <label class="form-label">Strategy</label>
-              <select name="strategy" class="form-select">
-                <option value="momentum">Momentum</option>
-                <option value="carry_arb">Carry Arb</option>
-                <option value="buy_hold">Buy &amp; Hold</option>
-              </select>
+            <div class="form-group"><label class="form-label">Mode</label><select name="mode" class="form-select"><option value="synthetic" selected>Synthetic Research</option><option value="historical">Historical Event-Time</option></select></div>
+            <div class="form-group"><label class="form-label">Strategy</label><select name="strategy" class="form-select"><option value="momentum">Momentum</option><option value="carry_arb">Carry Arb</option><option value="buy_hold">Buy &amp; Hold</option><option value="recorded_orders" data-historical-strategy disabled>Recorded Orders / Fills</option></select></div>
+            <div class="form-group"><label class="form-label">Window Days</label><input name="window_days" class="form-input" type="number" value="30" min="1"></div>
+            <div class="form-group"><label class="form-label">Initial Capital</label><input name="initial_capital" class="form-input" type="number" value="10000" min="0.01"></div>
+            <div class="form-group"><label class="form-label">Venue</label><select name="venue" class="form-select"><option value="hyperliquid">Hyperliquid</option><option value="drift">Drift</option><option value="paper">Paper</option></select></div>
+            <div class="form-group" data-synthetic-only><label class="form-label">Fee bps</label><input name="fee_bps" class="form-input" type="number" value="10" min="0"></div>
+            <div class="form-group"><label class="form-label">Slippage bps</label><input name="slippage_bps" class="form-input" type="number" value="5" min="0"></div>
+            <div class="form-group" data-historical-only><label class="form-label">Market</label><input name="market" class="form-input" value="SOL-PERP"></div>
+            <div class="form-group" data-historical-only><label class="form-label">Historical Symbol</label><input name="symbol" class="form-input" value="SOL-PERP"></div>
+            <div class="form-group" data-historical-only><label class="form-label">Start Date/Time</label><input name="start_ts" class="form-input" type="datetime-local"></div>
+            <div class="form-group" data-historical-only><label class="form-label">End Date/Time</label><input name="end_ts" class="form-input" type="datetime-local"></div>
+            <div class="form-group" data-historical-only><label class="form-label">Latency ms</label><input name="latency_ms" class="form-input" type="number" value="100" min="0"></div>
+            <div class="form-group" data-historical-only><label class="form-label">Maker Fee bps</label><input name="maker_fee_bps" class="form-input" type="number" value="2" min="0" step="0.1"></div>
+            <div class="form-group" data-historical-only><label class="form-label">Taker Fee bps</label><input name="taker_fee_bps" class="form-input" type="number" value="5" min="0" step="0.1"></div>
+            <div class="form-group" data-historical-only><label class="form-label">Fill Model</label><select name="fill_model" class="form-select"><option value="full">Full</option><option value="fixed_partial">Fixed Partial</option></select></div>
+            <div class="form-group" data-historical-only><button id="backtest-advanced-toggle" type="button" class="btn">Advanced</button></div>
+            <div class="advanced-form-section" data-historical-only data-advanced-only>
+              <div class="form-group"><label class="form-label">Partial Fill Ratio</label><input name="partial_fill_ratio" class="form-input" type="number" value="0.5" min="0.01" max="1" step="0.05"></div>
+              <div class="form-group"><label class="form-label">Allocation Limit</label><input name="allocation_limit" class="form-input" type="number" value="1" min="0.01" max="1" step="0.05"></div>
+              <div class="form-group"><label class="form-label">Max Gross Leverage</label><input name="max_gross_leverage" class="form-input" type="number" value="1" min="0.01" step="0.1"></div>
+              <div class="form-group"><label class="form-label">Decision Interval Seconds</label><input name="decision_interval_seconds" class="form-input" type="number" value="60" min="1"></div>
+              <div class="form-group checkbox-group"><label><input name="walk_forward" type="checkbox"> Walk Forward</label></div>
+              <div class="form-group"><label class="form-label">Train Window Days</label><input name="train_window_days" class="form-input" type="number" value="30" min="1"></div>
+              <div class="form-group"><label class="form-label">Test Window Days</label><input name="test_window_days" class="form-input" type="number" value="7" min="1"></div>
+              <div class="form-group"><label class="form-label">Step Days</label><input name="step_days" class="form-input" type="number" value="7" min="1"></div>
+              <div class="form-group checkbox-group"><label><input name="close_at_end" type="checkbox" checked> Close At End</label></div>
             </div>
-            <div class="form-group">
-              <label class="form-label">Window (days)</label>
-              <input name="window_days" class="form-input" type="number" value="30" min="1" max="365" style="width:70px">
-            </div>
-            <div class="form-group">
-              <label class="form-label">Capital ($)</label>
-              <input name="initial_capital" class="form-input" type="number" value="10000" min="100" style="width:90px">
-            </div>
-            <div class="form-group">
-              <label class="form-label">Venue</label>
-              <select name="venue" class="form-select">
-                <option value="hyperliquid">Hyperliquid</option>
-                <option value="drift">Drift</option>
-                <option value="paper">Paper</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Fee (bps)</label>
-              <input name="fee_bps" class="form-input" type="number" value="10" min="0" style="width:60px">
-            </div>
-            <div class="form-group">
-              <label class="form-label">Slippage (bps)</label>
-              <input name="slippage_bps" class="form-input" type="number" value="5" min="0" style="width:70px">
-            </div>
-            <div class="form-group">
-              <button type="submit" class="btn btn-primary">Run Backtest</button>
-            </div>
+            <div class="form-group"><button type="submit" class="btn btn-primary">Run Backtest</button></div>
           </form>
-          <div id="backtest-result-panel" style="margin-top:12px">
-            <div class="empty-state"><div class="empty-state-text">Submit form to run a backtest</div></div>
-          </div>
+          <div id="backtest-result-panel" style="margin-top:12px"><div class="empty-state"><div class="empty-state-text">Submit form to run a backtest</div></div></div>
         </div>
+        <div class="section-title">Historical Data Coverage</div>
+        <div id="backtest-coverage-panel" class="card"><div class="empty-state-text">Loading historical coverage...</div></div>
+        <div class="section-title">Recent Backtest Runs</div>
+        <div id="backtest-history-panel" class="card"><div class="empty-state-text">Loading backtest history...</div></div>
       </div>
 
       <!-- EXECUTION TAB -->
@@ -441,11 +437,20 @@
               <label class="form-label">Price (opt)</label>
               <input name="price" class="form-input" type="number" step="0.01" placeholder="Market">
             </div>
+            <div class="form-group"><label class="form-label">Order Type</label><select name="order_type" class="form-select"><option value="limit">Limit</option><option value="market">Market</option></select></div>
+            <div class="form-group"><label class="form-label">Slippage bps</label><input name="slippage_bps" class="form-input" type="number" value="0" min="0"></div>
             <div class="form-group">
               <button type="submit" class="btn btn-success">Submit Order</button>
             </div>
           </form>
         </div>
+
+        <div class="grid-2 core-execution-panels" style="margin-top:16px">
+          <div><div class="section-title">Execution Safety</div><div id="execution-safety-panel" class="card"><div class="empty-state-text">Loading server safety gates...</div></div></div>
+          <div><div class="section-title">Last Order Result</div><div id="last-order-result-panel" class="card last-order-result"><div class="empty-state-text">No order submitted in this session.</div></div></div>
+        </div>
+        <div class="section-title">PositionLedger Accounting</div><div id="execution-accounting-panel" class="card"><div class="empty-state-text">Loading authoritative positions...</div></div>
+        <div class="section-title">Recent Order Lifecycle</div><div id="execution-lifecycle-panel" class="card lifecycle-list"><div class="empty-state-text">No lifecycle events yet.</div></div>
 
         <div class="grid-2" style="margin-top:16px">
           <div>
@@ -591,6 +596,8 @@
         <div class="card" id="portfolio-risk-panel">
           <div class="empty-state"><div class="empty-state-text">Loading portfolio risk...</div></div>
         </div>
+        <div id="portfolio-risk-breakdown-panel" class="card" style="margin-top:10px"><div class="empty-state-text">Loading exposure breakdown and risk contributions...</div></div>
+        <div class="section-title">Redis Runtime Telemetry</div><div id="redis-health-panel" class="card"><div class="empty-state-text">Loading Redis health...</div></div>
 
         <div class="section-title">Volatility Regime</div>
         <div class="card" id="vol-regime-panel">

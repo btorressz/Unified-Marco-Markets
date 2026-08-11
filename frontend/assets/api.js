@@ -133,6 +133,8 @@ const API = (() => {
     postBacktestRun: (config) => postJSON('/api/backtest/run', config),
     getBacktestLatest: () => fetchJSON('/api/backtest/latest'),
     getBacktestHistory: () => fetchJSON('/api/backtest/history'),
+    getBacktestDataCoverage: () => fetchJSON('/api/backtest/data-coverage'),
+    getBacktestRun: (runId) => fetchJSON(`/api/backtest/${encodeURIComponent(runId)}`),
 
     getVolRegime: () => fetchJSON('/api/volatility/regime'),
     getVolRecommendations: () => fetchJSON('/api/volatility/recommendations'),
