@@ -2,6 +2,15 @@ import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter
 
+from backend.core.state_keys import (
+    GDELT_LATEST,
+    PREDICTION_LATEST,
+    PRICE_INTEGRITY,
+    PYTH_SOL_USD,
+    STABLECOIN_HEALTH,
+    STABLECOIN_HEALTH_LEGACY,
+    WITS_AGGREGATE,
+)
 from backend.core.state_store import StateStore
 from backend.agents.risk_agent import RiskAgent
 from backend.agents.macro_agent import MacroAgent
@@ -56,7 +65,7 @@ def _build_agent_state() -> dict:
     if risk:
         state["margin_usage"] = risk.get("margin_usage", 0)
 
-    stable = _store.get_snapshot("stablecoin:health")
+    stable = _store.get_snapshot(STABLECOIN_HEALTH) or _store.get_snapshot(STABLECOIN_HEALTH_LEGACY)
     if stable:
         state["stablecoin_health"] = stable
 
@@ -65,22 +74,22 @@ def _build_agent_state() -> dict:
         state["orderbook_imbalance"] = micro.get("imbalance", 0)
         state["spread_bps"] = micro.get("spread_bps", 0) if "spread_bps" in micro else 0
 
-    integrity = _store.get_snapshot("price:integrity")
+    integrity = _store.get_snapshot(PRICE_INTEGRITY)
     if integrity:
-        state["price_integrity"] = integrity.get("status", "OK")
+        state["price_integrity"] = integrity.get("status", "UNKNOWN")
 
     state["positions"] = []
     state["current_price"] = 0
 
-    price_snap = _store.get_snapshot("price:pyth:SOL_USD")
+    price_snap = _store.get_snapshot(PYTH_SOL_USD)
     if not price_snap:
         price_snap = _store.get_snapshot("price:sol:pyth")
     if price_snap:
         state["current_price"] = price_snap.get("price", 0)
 
-    predict = _store.get_snapshot("prediction:latest")
+    predict = _store.get_snapshot(PREDICTION_LATEST)
     if predict:
-        state["predictor_prob"] = predict.get("probability_up", 0.5)
+        state["predictor_prob"] = predict.get("probability", predict.get("prob_up_next_4h", 0.5))
 
     carry = _store.get_snapshot("carry:latest")
     if carry:
@@ -138,7 +147,11 @@ def get_agent_signals():
     try:
         from backend.compute.geopolitical_risk import compute_geopolitical_index
         from backend.compute.portfolio_protection import protection_protocol
-        geo_state = compute_geopolitical_index({"gdelt": _store.get_snapshot("gdelt:latest"), "wits": _store.get_snapshot("wits:tariff:USA:ALL:ALL") or _store.get_snapshot("wits:latest"), "stablecoin": _store.get_snapshot("stablecoin:health:latest")})
+        geo_state = compute_geopolitical_index({
+            "gdelt": _store.get_snapshot(GDELT_LATEST),
+            "wits": _store.get_snapshot(WITS_AGGREGATE),
+            "stablecoin": _store.get_snapshot(STABLECOIN_HEALTH) or _store.get_snapshot(STABLECOIN_HEALTH_LEGACY),
+        })
         protection = protection_protocol({"geopolitical_index": geo_state, "data_quality": geo_state.get("data_quality", "degraded")})
         signals.extend(_geo_agent.evaluate(geo_state))
         signals.extend(_sanctions_agent.evaluate(geo_state))
@@ -147,7 +160,6 @@ def get_agent_signals():
         signals.extend(_protection_agent.evaluate({**geo_state, **protection}))
     except Exception:
         logger.debug("Geopolitical agents error", exc_info=True)
-
 
     _record_signals(signals)
     _store.set_snapshot("agents:signals", {"signals": signals, "ts": datetime.now(timezone.utc).isoformat()}, ttl=30)
