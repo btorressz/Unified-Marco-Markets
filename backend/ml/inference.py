@@ -1,75 +1,43 @@
 import logging
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime,timezone
+from backend.ml.feature_store import features_to_vector,FEATURE_SCHEMA_ID,FEATURE_SCHEMA_VERSION
+from backend.ml.training import get_trained_model,set_trained_model
+from backend.ml.governance import repository,deserialize_artifact,input_hash
+logger=logging.getLogger(__name__); _CACHED_PREDICTION=None
 
-from backend.ml.feature_store import features_to_vector, FEATURE_NAMES
-from backend.ml.training import get_trained_model
+def invalidate_cache():
+    global _CACHED_PREDICTION; set_trained_model(None); _CACHED_PREDICTION=None
 
-logger = logging.getLogger(__name__)
+def _heuristic_predict(features,reason="no_active_model"):
+    score=.5-(features.get("tariff_index",30)-30)/200-features.get("shock_score",0)*.05-features.get("vol_regime_encoded",.25)*.10+(features.get("stable_health",1)-.5)*.10+(features.get("predictor_conf",.5)-.5)*.15+(features.get("exec_quality",.8)-.5)*.05
+    p=max(.05,min(.95,score)); strength=round(abs(p-.5)*2,4)
+    return {"probability":round(p,4),"prediction":int(p>.5),"prediction_strength":strength,
+            "probability_calibrated":False,"model_type":"heuristic_fallback","fallback_used":True,
+            "fallback_reason":reason,"confidence":strength}
 
-_CACHED_PREDICTION: dict[str, Any] | None = None
+def _load_active():
+    try: model=repository().active_model()
+    except Exception: return None,"governance_store_unavailable"
+    if not model:return None,"no_active_model"
+    if model.get("feature_schema_id")!=FEATURE_SCHEMA_ID or model.get("feature_schema_version")!=FEATURE_SCHEMA_VERSION:return None,"feature_schema_mismatch"
+    try: artifact=deserialize_artifact(model.get("artifact_blob"),model.get("artifact_sha256"))
+    except Exception:return None,"artifact_integrity_failure"
+    value={"pipeline":artifact["pipeline"],"record":model}; set_trained_model(value); return value,None
 
-
-def _heuristic_predict(features: dict[str, float]) -> dict[str, Any]:
-    tariff_idx = features.get("tariff_index", 30.0)
-    shock = features.get("shock_score", 0.0)
-    vol_enc = features.get("vol_regime_encoded", 0.25)
-    stable_health = features.get("stable_health", 1.0)
-    predictor_conf = features.get("predictor_conf", 0.5)
-    exec_quality = features.get("exec_quality", 0.8)
-
-    score = 0.5
-    score -= (tariff_idx - 30.0) / 200.0
-    score -= shock * 0.05
-    score -= vol_enc * 0.10
-    score += (stable_health - 0.5) * 0.10
-    score += (predictor_conf - 0.5) * 0.15
-    score += (exec_quality - 0.5) * 0.05
-
-    prob = max(0.05, min(0.95, score))
-    confidence = 0.3 + predictor_conf * 0.3 + stable_health * 0.2
-
-    return {
-        "probability": round(prob, 4),
-        "prediction": 1 if prob > 0.5 else 0,
-        "confidence": round(min(confidence, 0.75), 3),
-        "model_type": "heuristic_fallback",
-    }
-
-
-def predict(features: dict[str, float]) -> dict[str, Any]:
+def predict(features,feature_provenance=None,feature_quality=None,timestamp=None,explanation=None):
     global _CACHED_PREDICTION
-
-    model_data = get_trained_model()
-
-    if model_data is None:
-        pred = _heuristic_predict(features)
+    ts=timestamp or datetime.now(timezone.utc).isoformat(); data=get_trained_model(); reason=None
+    if data is None:data,reason=_load_active()
+    if data is None:pred=_heuristic_predict(features,reason)
     else:
         try:
-            model = model_data["model"]
-            scaler = model_data.get("scaler")
-            vec = [features_to_vector(features)]
+            vec=[features_to_vector(features)]; p=float(data["pipeline"].predict_proba(vec)[0][1]); rec=data["record"]
+            pred={"probability":round(p,4),"prediction":int(p>=.5),"prediction_strength":round(abs(p-.5)*2,4),"probability_calibrated":bool((rec.get("calibration_metrics") or {}).get("probability_calibrated",False)),"model_type":rec["model_type"],"model_id":str(rec["id"]),"model_version":rec["model_version"],"training_run_id":str(rec["training_run_id"]),"dataset_id":str(rec["dataset_id"]),"fallback_used":False,"fallback_reason":None}
+        except Exception as exc: logger.warning("ML inference failed: %s",exc); pred=_heuristic_predict(features,"inference_failure")
+    pred["ts"]=ts; pred["input_hash"]=input_hash(pred.get("model_version","heuristic_fallback"),features_to_vector(features),ts)
+    payload={**pred,"features":features,"feature_provenance":feature_provenance or {},"feature_quality":feature_quality or {},"explanation":explanation}
+    try: repository().save_prediction(payload)
+    except Exception: logger.debug("Prediction persistence unavailable",exc_info=True)
+    _CACHED_PREDICTION=pred; return pred
 
-            if scaler is not None:
-                vec = scaler.transform(vec)
-
-            prob = float(model.predict_proba(vec)[0][1])
-            pred_class = int(model.predict(vec)[0])
-
-            pred = {
-                "probability": round(prob, 4),
-                "prediction": pred_class,
-                "confidence": round(min(0.85, model_data.get("train_accuracy", 0.5)), 3),
-                "model_type": model_data.get("type", "unknown"),
-            }
-        except Exception as exc:
-            logger.warning("ML inference failed, using heuristic: %s", exc)
-            pred = _heuristic_predict(features)
-
-    pred["ts"] = datetime.now(timezone.utc).isoformat()
-    _CACHED_PREDICTION = pred
-    return pred
-
-
-def get_cached_prediction() -> dict[str, Any] | None:
-    return _CACHED_PREDICTION
+def get_cached_prediction():return _CACHED_PREDICTION

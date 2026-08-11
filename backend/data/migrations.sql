@@ -313,3 +313,27 @@ CREATE INDEX IF NOT EXISTS idx_provenance_run ON data_provenance (ingest_run_id)
 CREATE INDEX IF NOT EXISTS idx_provenance_source_created ON data_provenance (source_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_provenance_artifact ON data_provenance (artifact_type, artifact_id);
 CREATE INDEX IF NOT EXISTS idx_provenance_created ON data_provenance (created_at DESC);
+
+-- Additive, auditable ML registry. Artifacts originate only from local training.
+CREATE TABLE IF NOT EXISTS ml_datasets (
+ id VARCHAR(64) PRIMARY KEY, dataset_hash CHAR(64) UNIQUE NOT NULL, manifest JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS ml_training_runs (
+ id UUID PRIMARY KEY, dataset_id VARCHAR(64) NOT NULL REFERENCES ml_datasets(id), status VARCHAR(30) NOT NULL,
+ method VARCHAR(60) NOT NULL, fold_metrics JSONB NOT NULL DEFAULT '[]', metrics JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS ml_models (
+ id UUID PRIMARY KEY, model_key VARCHAR(100) NOT NULL, model_version VARCHAR(30) NOT NULL,
+ training_run_id UUID NOT NULL REFERENCES ml_training_runs(id), dataset_id VARCHAR(64) NOT NULL REFERENCES ml_datasets(id),
+ model_type VARCHAR(100) NOT NULL, lifecycle_state VARCHAR(20) NOT NULL CHECK (lifecycle_state IN ('candidate','active','archived','rejected')),
+ feature_schema_id VARCHAR(100) NOT NULL, feature_schema_version INTEGER NOT NULL, label_definition_id VARCHAR(100) NOT NULL,
+ label_definition_version INTEGER NOT NULL, validation_metrics JSONB NOT NULL DEFAULT '{}', calibration_metrics JSONB NOT NULL DEFAULT '{}',
+ artifact_blob BYTEA NOT NULL, artifact_sha256 CHAR(64) NOT NULL, library_versions JSONB NOT NULL DEFAULT '{}', promotion_reason TEXT,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), promoted_at TIMESTAMPTZ, archived_at TIMESTAMPTZ,
+ UNIQUE(model_key,model_version)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ml_one_active ON ml_models(model_key) WHERE lifecycle_state='active';
+CREATE TABLE IF NOT EXISTS ml_predictions (
+ id UUID PRIMARY KEY DEFAULT gen_random_uuid(), input_hash CHAR(64) NOT NULL, payload JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ml_predictions_created ON ml_predictions(created_at DESC);

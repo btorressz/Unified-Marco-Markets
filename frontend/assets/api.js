@@ -133,6 +133,13 @@ const API = (() => {
     getMLPredictionLatest: () => fetchJSON('/api/ml/prediction/latest'),
     postMLTrainOffline: (body) => postJSON('/api/ml/train/offline', body),
     getMLTrainingHistory: () => fetchJSON('/api/ml/training/history'),
+    getMLModels: () => fetchJSON('/api/ml/models'),
+    getMLActiveModel: () => fetchJSON('/api/ml/models/active'),
+    getMLTrainingRuns: () => fetchJSON('/api/ml/training/runs'),
+    getMLModelHealth: () => fetchJSON('/api/ml/model-health'),
+    getMLComparison: () => fetchJSON('/api/ml/comparison'),
+    promoteMLModel: (id, reason) => postJSON(`/api/ml/models/${encodeURIComponent(id)}/promote`, { reason }),
+    rollbackMLModel: (id, reason) => postJSON(`/api/ml/models/${encodeURIComponent(id)}/rollback`, { reason }),
 
     postBacktestRun: (config) => postJSON('/api/backtest/run', config),
     getBacktestLatest: () => fetchJSON('/api/backtest/latest'),
