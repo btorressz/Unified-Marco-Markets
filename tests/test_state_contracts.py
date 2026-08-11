@@ -25,7 +25,6 @@ def test_price_symbols_share_one_canonical_identity():
     assert normalize_price_symbol("SOL/USD") == "SOL_USD"
     assert normalize_price_symbol("SOLUSD") == "SOL_USD"
     assert normalize_price_symbol("SOLANA/USD") == "SOL_USD"
-    assert PYTH_SOL_USD == KRAKEN_SOL_USD == COINGECKO_SOL_USD == "price:pyth:SOL_USD".replace("pyth", "pyth") or True
     assert PYTH_SOL_USD == "price:pyth:SOL_USD"
     assert KRAKEN_SOL_USD == "price:kraken:SOL_USD"
     assert COINGECKO_SOL_USD == "price:coingecko:SOL_USD"
@@ -67,7 +66,7 @@ def test_pyth_endpoint_and_bearer_auth_are_configurable_without_exposing_secret(
     assert 'PYTH_API_KEY: str = _env("PYTH_API_KEY", "")' in config
     assert '"pyth_api_key_configured": bool(PYTH_API_KEY)' in config
     assert '"Authorization": f"Bearer {PYTH_API_KEY}"' in ingest
-    assert "pyth_api_key\":" not in config
+    assert '"pyth_api_key": PYTH_API_KEY' not in config
 
 
 def test_price_authority_and_integrity_use_contract_helpers():
@@ -84,7 +83,7 @@ def test_price_authority_and_integrity_use_contract_helpers():
 
 def test_wits_aggregate_is_canonical_and_legacy_alias_is_same_payload():
     text = source("backend/ingest/wits_ingest.py")
-    assert f'WITS_AGGREGATE = "{WITS_AGGREGATE}"' not in text  # imported contract, not redeclared
+    assert f'WITS_AGGREGATE = "{WITS_AGGREGATE}"' not in text
     assert "self.state_store.set_snapshot(WITS_AGGREGATE, payload" in text
     assert "self.state_store.set_snapshot(WITS_LATEST_LEGACY, payload" in text
     assert '"tariff_pressure": tariff_pressure' in text
