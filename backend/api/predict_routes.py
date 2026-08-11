@@ -1,7 +1,7 @@
 import logging
-from datetime import datetime, timezone
 from fastapi import APIRouter, Query
 
+from backend.core.state_keys import PREDICTION_LATEST, PREDICTION_LATEST_LEGACY, prediction_symbol_key
 from backend.core.state_store import StateStore
 from backend.compute.macro_predictor import MacroPredictor
 
@@ -34,7 +34,7 @@ def _build_features(symbol: str) -> dict:
     else:
         features["cross_venue_spread_bps"] = 0.0
 
-    stable = _store.get_snapshot("stablecoin:health")
+    stable = _store.get_snapshot("stablecoin:health:latest") or _store.get_snapshot("stablecoin:health")
     if stable:
         depeg_sum = sum(d.get("depeg_bps", 0) for d in stable.values() if isinstance(d, dict))
         features["stablecoin_health_score"] = max(0, 1.0 - depeg_sum / 100.0)
@@ -50,13 +50,18 @@ def _build_features(symbol: str) -> dict:
     return features
 
 
+def _save_prediction(symbol: str, result: dict) -> None:
+    _store.set_snapshot(prediction_symbol_key(symbol), result, ttl=120)
+    _store.set_snapshot(PREDICTION_LATEST, result, ttl=120)
+    _store.set_snapshot(PREDICTION_LATEST_LEGACY, result, ttl=120)
+
+
 @router.get("/latest")
 def get_prediction(symbol: str = Query("SOL")):
     features = _build_features(symbol)
     result = _predictor.predict(features)
     result["symbol"] = symbol
-
-    _store.set_snapshot(f"prediction:{symbol}", result, ttl=120)
+    _save_prediction(symbol, result)
     return result
 
 
