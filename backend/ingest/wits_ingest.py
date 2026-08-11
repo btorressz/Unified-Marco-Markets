@@ -6,12 +6,13 @@ import pandas as pd
 
 from backend.config import WITS_COUNTRIES, WITS_PRODUCTS
 from backend.core.event_bus import EventBus, EventType
+from backend.core.state_keys import WITS_AGGREGATE
 from backend.core.state_store import StateStore
 
 logger = logging.getLogger(__name__)
 
 WITS_BASE_URL = "https://wits.worldbank.org/API/V1/SDMX/V21/rest/data"
-WITS_AGGREGATE_SNAPSHOT_KEY = "wits:tariff:aggregate"
+WITS_AGGREGATE_SNAPSHOT_KEY = WITS_AGGREGATE
 
 _SAMPLE_TARIFF_DATA = [
     {"reporter": "USA", "partner": "CHN", "product": "TOTAL", "year": 2025, "tariff_rate": 19.3, "trade_value": 450000},
@@ -103,22 +104,26 @@ class WITSIngestor:
         )
 
     def _store_aggregate_freshness(self, results: list[pd.DataFrame], run_context=None) -> None:
-        """Publish one canonical freshness beacon for the configured WITS sweep.
-
-        Individual country/product snapshots remain unchanged. This aggregate
-        snapshot gives feed-health a stable key regardless of configured WITS
-        countries/products; provider reliability/fallback remains sourced from
-        the durable ingest-run ledger rather than inferred from this beacon.
-        """
+        """Publish one canonical WITS snapshot for freshness and downstream readers."""
+        rates: list[float] = []
+        for df in results:
+            if isinstance(df, pd.DataFrame) and "tariff_rate" in df.columns:
+                numeric = pd.to_numeric(df["tariff_rate"], errors="coerce").dropna()
+                rates.extend(float(value) for value in numeric.tolist())
+        tariff_pressure = round(sum(rates) / len(rates), 4) if rates else None
+        fallback_used = bool(getattr(run_context, "fallback_used", False))
         self.state_store.set_snapshot(
-            WITS_AGGREGATE_SNAPSHOT_KEY,
+            WITS_AGGREGATE,
             {
                 "reporter": "840",
                 "countries": list(WITS_COUNTRIES),
                 "products": list(WITS_PRODUCTS),
                 "batch_count": len(results),
                 "records_returned": sum(len(df) for df in results),
-                "fallback_used": bool(getattr(run_context, "fallback_used", False)),
+                "tariff_pressure": tariff_pressure,
+                "value": tariff_pressure,
+                "fallback_used": fallback_used,
+                "data_quality": "fallback" if fallback_used else "provider",
                 "ts": datetime.now(timezone.utc).isoformat(),
             },
             ttl=86400,
