@@ -66,6 +66,8 @@ DRIFT_RPC_URL: str = _env("DRIFT_RPC_URL", "")
 SOLANA_RPC_URL: str = _env("SOLANA_RPC_URL", "")
 SOLANA_PRIVATE_KEY: str = _env("SOLANA_PRIVATE_KEY", "")
 JUPITER_API_URL: str = _env("JUPITER_API_URL", "https://api.jup.ag")
+PYTH_HERMES_URL: str = _env("PYTH_HERMES_URL", "https://hermes.pyth.network/v2/updates/price/latest")
+PYTH_API_KEY: str = _env("PYTH_API_KEY", "")
 
 EXECUTION_MODE: str = _env("EXECUTION_MODE", "paper")
 if EXECUTION_MODE not in ("paper", "live"):
@@ -151,6 +153,8 @@ def summary() -> dict:
         "drift_enabled": bool(DRIFT_RPC_URL),
         "solana_enabled": bool(SOLANA_RPC_URL),
         "jupiter_api_url": JUPITER_API_URL,
+        "pyth_hermes_url": PYTH_HERMES_URL,
+        "pyth_api_key_configured": bool(PYTH_API_KEY),
         "wits_countries": WITS_COUNTRIES,
         "wits_products": WITS_PRODUCTS,
         "gdelt_keywords": GDELT_KEYWORDS,

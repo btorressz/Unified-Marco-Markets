@@ -3,13 +3,14 @@ from datetime import datetime, timezone
 
 import httpx
 
+from backend.config import PYTH_API_KEY, PYTH_HERMES_URL
 from backend.core.models import PriceTick
+from backend.core.state_keys import price_snapshot_key
 from backend.core.state_store import StateStore
 from backend.data.repositories.market_repo import MarketRepository
 
 logger = logging.getLogger(__name__)
 
-PYTH_HERMES_URL = "https://hermes.pyth.network/v2/updates/price/latest"
 SOL_USD_FEED_ID = "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d"
 
 
@@ -25,10 +26,11 @@ class PythIngestor:
 
     async def fetch_price(self, price_feed_id: str = SOL_USD_FEED_ID, run_context=None) -> PriceTick | None:
         params = {"ids[]": price_feed_id}
+        headers = {"Authorization": f"Bearer {PYTH_API_KEY}"} if PYTH_API_KEY else None
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(PYTH_HERMES_URL, params=params)
+                resp = await client.get(PYTH_HERMES_URL, params=params, headers=headers)
                 resp.raise_for_status()
                 data = resp.json()
 
@@ -68,11 +70,12 @@ class PythIngestor:
             return None
 
     def _store_tick(self, tick: PriceTick, run_context=None) -> None:
-        self.state_store.set_snapshot(
-            f"price:{tick.venue}:{tick.symbol}",
-            tick.model_dump(mode="json"),
-            ttl=120,
-        )
+        payload = tick.model_dump(mode="json")
+        native_key = f"price:{tick.venue}:{tick.symbol}"
+        canonical_key = price_snapshot_key(tick.venue, tick.symbol)
+        self.state_store.set_snapshot(native_key, payload, ttl=120)
+        if canonical_key != native_key:
+            self.state_store.set_snapshot(canonical_key, payload, ttl=120)
         row = self.market_repo.save_tick(
             symbol=tick.symbol,
             venue=tick.venue,

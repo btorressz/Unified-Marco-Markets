@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
+from backend.core.state_keys import GDELT_LATEST, WITS_AGGREGATE
 from backend.core.state_store import StateStore
 from backend.compute.macro_events import build_macro_events, compute_impact, compute_event_reaction
 
@@ -9,8 +10,8 @@ _store = StateStore()
 
 
 def _events():
-    wits = _store.get_snapshot("wits:tariff:USA:ALL:ALL") or _store.get_snapshot("wits:latest")
-    gdelt = _store.get_snapshot("gdelt:latest")
+    wits = _store.get_snapshot(WITS_AGGREGATE)
+    gdelt = _store.get_snapshot(GDELT_LATEST)
     return build_macro_events(wits, gdelt)
 
 

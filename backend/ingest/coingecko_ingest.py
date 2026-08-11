@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import httpx
 
 from backend.core.models import PriceTick
+from backend.core.state_keys import price_snapshot_key
 from backend.core.state_store import StateStore
 from backend.data.repositories.market_repo import MarketRepository
 
@@ -66,11 +67,12 @@ class CoinGeckoIngestor:
             return None
 
     def _store_tick(self, tick: PriceTick, run_context=None) -> None:
-        self.state_store.set_snapshot(
-            f"price:{tick.venue}:{tick.symbol}",
-            tick.model_dump(mode="json"),
-            ttl=120,
-        )
+        payload = tick.model_dump(mode="json")
+        native_key = f"price:{tick.venue}:{tick.symbol}"
+        canonical_key = price_snapshot_key(tick.venue, tick.symbol)
+        self.state_store.set_snapshot(native_key, payload, ttl=120)
+        if canonical_key != native_key:
+            self.state_store.set_snapshot(canonical_key, payload, ttl=120)
         row = self.market_repo.save_tick(
             symbol=tick.symbol,
             venue=tick.venue,
