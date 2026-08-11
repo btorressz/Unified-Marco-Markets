@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import socket
 from collections.abc import Awaitable, Callable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -13,6 +14,9 @@ from backend.ingest.kraken_ingest import KrakenIngestor
 from backend.ingest.coingecko_ingest import CoinGeckoIngestor
 from backend.ingest.pyth_ingest import PythIngestor
 from backend.ingest.drift_ingest import DriftIngestor
+from backend.data.repositories.ingest_repo import IngestRepository
+from backend.ingest.provenance import IngestRunContext
+from backend.ingest.source_registry import get_source
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +27,8 @@ class IngestScheduler:
         self.event_bus = event_bus or EventBus()
         self.state_store = state_store or StateStore()
         self.scheduler = AsyncIOScheduler()
+        self.ingest_repo = IngestRepository()
+        self.worker_id = socket.gethostname()
 
         self.wits = WITSIngestor(event_bus=self.event_bus, state_store=self.state_store)
         self.gdelt = GDELTIngestor(event_bus=self.event_bus, state_store=self.state_store)
@@ -97,9 +103,36 @@ class IngestScheduler:
         finally:
             self.state_store.release_lease(f"scheduler:{lease_name}", token)
 
+    async def _run_source(self, source_id: str, lease_name: str, job) -> bool:
+        """Wrap the existing provider/lease flow in a fail-soft durable ledger."""
+        source = get_source(source_id); run_id = None
+        context = IngestRunContext(source_id)
+        try:
+            try:
+                row = self.ingest_repo.start_run(source_id, source["provider"], source["category"], self.worker_id)
+                run_id = str(row["id"]) if row else None; context.run_id = run_id
+            except Exception:
+                logger.warning("Ingest run ledger unavailable for %s", source_id, exc_info=True)
+            ran = await self._run_with_lease(lease_name, lambda: job(context))
+            facts = context.finish_fields()
+            if not ran:
+                facts.update(status="skipped_lease", lease_skipped=True, lease_acquired=False)
+            else:
+                facts["lease_acquired"] = self.state_store.get_redis() is not None
+            try:
+                self.ingest_repo.finish_run(run_id, **facts)
+            except Exception:
+                logger.warning("Could not finish ingest run for %s", source_id, exc_info=True)
+            return ran
+        except Exception as exc:
+            context.mark_failure(exc)
+            try: self.ingest_repo.mark_failure(run_id, exc)
+            except Exception: logger.warning("Could not mark ingest failure for %s", source_id, exc_info=True)
+            raise
+
     async def _run_wits(self) -> None:
         try:
-            ran = await self._run_with_lease("wits", self.wits.fetch_all)
+            ran = await self._run_source("wits_tariffs", "wits", lambda context: self.wits.fetch_all(run_context=context))
             if ran:
                 logger.debug("WITS ingest completed")
         except Exception:
@@ -107,7 +140,7 @@ class IngestScheduler:
 
     async def _run_gdelt(self) -> None:
         try:
-            ran = await self._run_with_lease("gdelt", self.gdelt.fetch_articles)
+            ran = await self._run_source("gdelt_macro_news", "gdelt", lambda context: self.gdelt.fetch_articles(run_context=context))
             if ran:
                 logger.debug("GDELT ingest completed")
         except Exception:
@@ -115,7 +148,7 @@ class IngestScheduler:
 
     async def _run_kraken(self) -> None:
         try:
-            ran = await self._run_with_lease("kraken", self.kraken.fetch_ticker)
+            ran = await self._run_source("kraken_sol_usd", "kraken", lambda context: self.kraken.fetch_ticker(run_context=context))
             if ran:
                 logger.debug("Kraken ingest completed")
         except Exception:
@@ -123,7 +156,7 @@ class IngestScheduler:
 
     async def _run_coingecko(self) -> None:
         try:
-            ran = await self._run_with_lease("coingecko", self.coingecko.fetch_price)
+            ran = await self._run_source("coingecko_sol_usd", "coingecko", lambda context: self.coingecko.fetch_price(run_context=context))
             if ran:
                 logger.debug("CoinGecko ingest completed")
         except Exception:
@@ -131,19 +164,16 @@ class IngestScheduler:
 
     async def _run_pyth(self) -> None:
         try:
-            ran = await self._run_with_lease("pyth", self.pyth.fetch_price)
+            ran = await self._run_source("pyth_sol_usd", "pyth", lambda context: self.pyth.fetch_price(run_context=context))
             if ran:
                 logger.debug("Pyth ingest completed")
         except Exception:
             logger.error("Pyth ingest job failed", exc_info=True)
 
     async def _run_drift(self) -> None:
-        async def fetch_drift() -> None:
-            await self.drift.fetch_market_data()
-            await self.drift.fetch_funding()
-
         try:
-            ran = await self._run_with_lease("drift", fetch_drift)
+            ran = await self._run_source("drift_sol_perp", "drift-market", lambda context: self.drift.fetch_market_data(run_context=context))
+            await self._run_source("drift_funding_sol_perp", "drift-funding", lambda context: self.drift.fetch_funding(run_context=context))
             if ran:
                 logger.debug("Drift ingest completed")
         except Exception:

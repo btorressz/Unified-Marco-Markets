@@ -9,6 +9,8 @@ from backend.core.schemas import HealthResponse
 from backend.core.state_store import StateStore
 from backend.core.redis_runtime import get_redis_runtime
 from backend.data.db import check_connection
+from backend.data.repositories.ingest_repo import IngestRepository
+from backend.ingest.source_registry import list_sources
 
 logger = logging.getLogger(__name__)
 
@@ -17,15 +19,7 @@ router = APIRouter(prefix="/api/health", tags=["health"])
 _state_store = StateStore()
 _start_time = time.time()
 
-_FEED_DEFINITIONS: list[dict[str, Any]] = [
-    {"name": "Pyth", "key": "price:pyth:SOL_USD", "is_authoritative": True, "interval_seconds": 30},
-    {"name": "Kraken", "key": "price:kraken:SOL_USD", "is_authoritative": False, "interval_seconds": 30},
-    {"name": "CoinGecko", "key": "price:coingecko:SOL_USD", "is_authoritative": False, "interval_seconds": 60},
-    {"name": "Hyperliquid", "key": "price:hyperliquid:SOL/USD", "is_authoritative": False, "interval_seconds": 60},
-    {"name": "Drift", "key": "price:drift:SOL_PERP", "is_authoritative": False, "interval_seconds": 60},
-    {"name": "WITS", "key": "wits:tariff:USA:ALL:ALL", "is_authoritative": True, "interval_seconds": 21600},
-    {"name": "GDELT", "key": "gdelt:latest", "is_authoritative": False, "interval_seconds": 300},
-]
+_FEED_DEFINITIONS: list[dict[str, Any]] = [{"name":s["provider"],"source_id":s["source_id"],"key":s["snapshot_key"],"is_authoritative":s["authoritative"],"interval_seconds":s["expected_cadence_seconds"]} for s in list_sources()]
 
 _WARNING_MULTIPLIER = 3
 _ERROR_MULTIPLIER = 10
@@ -184,24 +178,28 @@ def data_quality_dashboard():
         {"name": "mock/demo equity fallback", "key": "equity:demo:latest", "is_authoritative": False, "interval_seconds": 31536000},
     ]]
     enriched = []
+    try: reliability=IngestRepository().get_registry_status([f.get("source_id") for f in _FEED_DEFINITIONS]); provenance_available=True
+    except Exception: reliability={}; provenance_available=False
     priorities = {"Pyth": 1, "Kraken": 2, "CoinGecko": 3, "yfinance": 1, "Stooq": 2, "mock/demo equity fallback": 3}
     fallback = {"Pyth": "Kraken", "Kraken": "CoinGecko", "CoinGecko": "demo", "yfinance": "Stooq", "Stooq": "mock/demo equity fallback"}
     for f in feeds:
         status = f.get("status")
         age = f.get("age_seconds")
         stale = status in ("warning", "error")
-        confidence = 0.95 if status == "ok" else 0.65 if status == "warning" else 0.35 if status == "fallback" else 0.20
+        run=reliability.get(f.get("source_id"),{})
         enriched.append({
             **f,
             "authoritative_source": f.get("is_authoritative", False),
             "source_priority": priorities.get(f["name"], 5),
             "source_age_seconds": age,
             "staleness": "fresh" if status == "ok" else "stale" if stale else "degraded",
-            "error_rate": 0.0 if status == "ok" else 0.25 if status == "warning" else 1.0,
-            "fallback_source": fallback.get(f["name"], "safe demo fallback"),
+            "error_rate": run.get("recent_failure_rate"),
+            "fallback_source": (run.get("last_run") or {}).get("fallback_source_id"),
             "degraded_mode": status != "ok",
-            "last_successful_fetch": f.get("last_update_ts"),
-            "confidence_score": confidence,
+            "last_successful_fetch": run.get("last_success"),
+            "confidence_score": None,
+            "last_attempt":run.get("last_attempt"),"last_failure":run.get("last_failure"),"failure_streak":run.get("failure_streak"),"recent_success_rate":run.get("recent_success_rate"),"provenance_available":provenance_available,
         })
     ok = sum(1 for f in enriched if f["status"] == "ok")
-    return {"status": "ok" if ok == len(enriched) else "degraded", "sources": enriched, "fallback_chain": ["Pyth", "Kraken", "CoinGecko", "yfinance", "Stooq", "mock/demo equity fallback"], "ts": now.isoformat()}
+    configured_chains = [s["fallback_chain"] for s in list_sources() if s["fallback_chain"]]
+    return {"status": "ok" if ok == len(enriched) else "degraded", "sources": enriched, "configured_fallback_chains": configured_chains, "provenance_available":provenance_available, "ts": now.isoformat()}

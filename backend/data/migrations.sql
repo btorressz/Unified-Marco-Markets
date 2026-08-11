@@ -289,3 +289,27 @@ CREATE TABLE IF NOT EXISTS heuristic_evaluations (
 );
 CREATE INDEX IF NOT EXISTS idx_heuristic_eval_rule_window ON heuristic_evaluations (heuristic_id, heuristic_version, decision_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_heuristic_eval_market_window ON heuristic_evaluations (venue, market, decision_ts DESC);
+
+-- Durable ingestion audit ledger and generic observation provenance.
+CREATE TABLE IF NOT EXISTS ingest_runs (
+ id UUID PRIMARY KEY DEFAULT gen_random_uuid(), source_id VARCHAR(100) NOT NULL, provider VARCHAR(100) NOT NULL,
+ data_type VARCHAR(100), status VARCHAR(30) NOT NULL, started_at TIMESTAMPTZ NOT NULL, completed_at TIMESTAMPTZ,
+ duration_ms DOUBLE PRECISION, records_received INTEGER NOT NULL DEFAULT 0, records_persisted INTEGER NOT NULL DEFAULT 0,
+ fallback_used BOOLEAN NOT NULL DEFAULT FALSE, fallback_source_id VARCHAR(100), fallback_type VARCHAR(50),
+ provider_timestamp TIMESTAMPTZ, lease_acquired BOOLEAN, lease_skipped BOOLEAN NOT NULL DEFAULT FALSE, worker_id VARCHAR(200),
+ error_type VARCHAR(200), error_message TEXT, metadata JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ingest_runs_source_started ON ingest_runs (source_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ingest_runs_status_started ON ingest_runs (status, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ingest_runs_started ON ingest_runs (started_at DESC);
+CREATE TABLE IF NOT EXISTS data_provenance (
+ id UUID PRIMARY KEY DEFAULT gen_random_uuid(), ingest_run_id UUID, source_id VARCHAR(100) NOT NULL,
+ artifact_type VARCHAR(100) NOT NULL, artifact_id VARCHAR(200), artifact_key VARCHAR(300), provider_timestamp TIMESTAMPTZ,
+ received_at TIMESTAMPTZ, persisted_at TIMESTAMPTZ, fallback_used BOOLEAN NOT NULL DEFAULT FALSE,
+ fallback_source_id VARCHAR(100), quality JSONB NOT NULL DEFAULT '{}', lineage JSONB NOT NULL DEFAULT '{}',
+ metadata JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_provenance_run ON data_provenance (ingest_run_id);
+CREATE INDEX IF NOT EXISTS idx_provenance_source_created ON data_provenance (source_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_provenance_artifact ON data_provenance (artifact_type, artifact_id);
+CREATE INDEX IF NOT EXISTS idx_provenance_created ON data_provenance (created_at DESC);

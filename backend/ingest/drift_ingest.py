@@ -22,7 +22,7 @@ class DriftIngestor:
         self.state_store = state_store or StateStore()
         self.market_repo = market_repo or MarketRepository()
 
-    async def fetch_market_data(self, market: str = "SOL-PERP") -> PriceTick | None:
+    async def fetch_market_data(self, market: str = "SOL-PERP", run_context=None) -> PriceTick | None:
         url = f"{DRIFT_API_BASE}/markets"
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
@@ -46,16 +46,19 @@ class DriftIngestor:
                             price=price,
                             ts=datetime.now(timezone.utc),
                         )
-                        self._store_price(tick)
+                        if run_context: run_context.mark_success(); run_context.record_received(1)
+                        self._store_price(tick, run_context)
                         return tick
 
                 logger.warning("Drift: market %s not found in response", market)
+                if run_context: run_context.mark_failure(ValueError("provider_empty_response"))
                 return None
-        except Exception:
+        except Exception as exc:
+            if run_context: run_context.mark_failure(exc)
             logger.warning("Drift market data fetch failed for %s", market, exc_info=True)
             return None
 
-    async def fetch_funding(self, market: str = "SOL-PERP") -> FundingTick | None:
+    async def fetch_funding(self, market: str = "SOL-PERP", run_context=None) -> FundingTick | None:
         url = f"{DRIFT_API_BASE}/fundingRates"
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
@@ -68,6 +71,7 @@ class DriftIngestor:
                     rates = [rates] if rates else []
 
                 if not rates:
+                    if run_context: run_context.mark_failure(ValueError("provider_empty_response"))
                     logger.warning("Drift: no funding rates for %s", market)
                     return None
 
@@ -80,35 +84,41 @@ class DriftIngestor:
                     funding_rate=funding_rate,
                     ts=datetime.now(timezone.utc),
                 )
-                self._store_funding(tick)
+                if run_context: run_context.mark_success(); run_context.record_received(1)
+                self._store_funding(tick, run_context)
                 return tick
-        except Exception:
+        except Exception as exc:
+            if run_context: run_context.mark_failure(exc)
             logger.warning("Drift funding fetch failed for %s", market, exc_info=True)
             return None
 
-    def _store_price(self, tick: PriceTick) -> None:
+    def _store_price(self, tick: PriceTick, run_context=None) -> None:
         self.state_store.set_snapshot(
             f"price:{tick.venue}:{tick.symbol}",
             tick.model_dump(mode="json"),
             ttl=120,
         )
-        self.market_repo.save_tick(
+        row = self.market_repo.save_tick(
             symbol=tick.symbol,
             venue=tick.venue,
             price=tick.price,
             confidence=tick.confidence,
             ts=tick.ts,
+            ingest_run_id=getattr(run_context,"run_id",None), source_id="drift_sol_perp", provenance=run_context,
         )
+        if run_context and row: run_context.record_persisted(1)
 
-    def _store_funding(self, tick: FundingTick) -> None:
+    def _store_funding(self, tick: FundingTick, run_context=None) -> None:
         self.state_store.set_snapshot(
             f"funding:{tick.venue}:{tick.market}",
             tick.model_dump(mode="json"),
             ttl=300,
         )
-        self.market_repo.save_funding_tick(
+        row = self.market_repo.save_funding_tick(
             venue=tick.venue,
             market=tick.market,
             funding_rate=tick.funding_rate,
             ts=tick.ts,
+            ingest_run_id=getattr(run_context,"run_id",None), source_id="drift_funding_sol_perp", provenance=run_context,
         )
+        if run_context and row: run_context.record_persisted(1)

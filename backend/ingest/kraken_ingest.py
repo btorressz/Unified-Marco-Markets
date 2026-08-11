@@ -22,7 +22,7 @@ class KrakenIngestor:
         self.state_store = state_store or StateStore()
         self.market_repo = market_repo or MarketRepository()
 
-    async def fetch_ticker(self, pair: str = "SOLUSD") -> PriceTick | None:
+    async def fetch_ticker(self, pair: str = "SOLUSD", run_context=None) -> PriceTick | None:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(KRAKEN_TICKER_URL, params={"pair": pair})
@@ -31,11 +31,13 @@ class KrakenIngestor:
 
                 errors = data.get("error", [])
                 if errors:
+                    if run_context: run_context.mark_failure(ValueError("provider_api_error"))
                     logger.warning("Kraken API errors: %s", errors)
                     return None
 
                 result = data.get("result", {})
                 if not result:
+                    if run_context: run_context.mark_failure(ValueError("provider_empty_response"))
                     logger.warning("Kraken returned empty result for pair=%s", pair)
                     return None
 
@@ -49,23 +51,27 @@ class KrakenIngestor:
                     price=last_price,
                     ts=datetime.now(timezone.utc),
                 )
+                if run_context: run_context.mark_success(); run_context.record_received(1)
 
-                self._store_tick(tick)
+                self._store_tick(tick, run_context)
                 return tick
-        except Exception:
+        except Exception as exc:
+            if run_context: run_context.mark_failure(exc)
             logger.warning("Kraken fetch failed for pair=%s", pair, exc_info=True)
             return None
 
-    def _store_tick(self, tick: PriceTick) -> None:
+    def _store_tick(self, tick: PriceTick, run_context=None) -> None:
         self.state_store.set_snapshot(
             f"price:{tick.venue}:{tick.symbol}",
             tick.model_dump(mode="json"),
             ttl=120,
         )
-        self.market_repo.save_tick(
+        row = self.market_repo.save_tick(
             symbol=tick.symbol,
             venue=tick.venue,
             price=tick.price,
             confidence=tick.confidence,
             ts=tick.ts,
+            ingest_run_id=getattr(run_context, "run_id", None), source_id="kraken_sol_usd", provenance=run_context,
         )
+        if run_context and row: run_context.record_persisted(1)

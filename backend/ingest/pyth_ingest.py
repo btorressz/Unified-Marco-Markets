@@ -23,7 +23,7 @@ class PythIngestor:
         self.state_store = state_store or StateStore()
         self.market_repo = market_repo or MarketRepository()
 
-    async def fetch_price(self, price_feed_id: str = SOL_USD_FEED_ID) -> PriceTick | None:
+    async def fetch_price(self, price_feed_id: str = SOL_USD_FEED_ID, run_context=None) -> PriceTick | None:
         params = {"ids[]": price_feed_id}
 
         try:
@@ -34,6 +34,7 @@ class PythIngestor:
 
                 parsed = data.get("parsed", [])
                 if not parsed:
+                    if run_context: run_context.mark_failure(ValueError("provider_empty_response"))
                     logger.warning("Pyth returned no parsed price data for feed=%s", price_feed_id[:16])
                     return None
 
@@ -47,6 +48,9 @@ class PythIngestor:
                 confidence = conf_raw * (10 ** expo)
 
                 ts = datetime.fromtimestamp(publish_time, tz=timezone.utc) if publish_time > 0 else datetime.now(timezone.utc)
+                if run_context:
+                    run_context.mark_success(); run_context.record_received(1)
+                    if publish_time > 0: run_context.set_provider_timestamp(ts)
 
                 tick = PriceTick(
                     symbol="SOL/USD",
@@ -56,22 +60,25 @@ class PythIngestor:
                     ts=ts,
                 )
 
-                self._store_tick(tick)
+                self._store_tick(tick, run_context)
                 return tick
-        except Exception:
+        except Exception as exc:
+            if run_context: run_context.mark_failure(exc)
             logger.warning("Pyth fetch failed for feed=%s", price_feed_id[:16], exc_info=True)
             return None
 
-    def _store_tick(self, tick: PriceTick) -> None:
+    def _store_tick(self, tick: PriceTick, run_context=None) -> None:
         self.state_store.set_snapshot(
             f"price:{tick.venue}:{tick.symbol}",
             tick.model_dump(mode="json"),
             ttl=120,
         )
-        self.market_repo.save_tick(
+        row = self.market_repo.save_tick(
             symbol=tick.symbol,
             venue=tick.venue,
             price=tick.price,
             confidence=tick.confidence,
             ts=tick.ts,
+            ingest_run_id=getattr(run_context, "run_id", None), source_id="pyth_sol_usd", provenance=run_context,
         )
+        if run_context and row: run_context.record_persisted(1)

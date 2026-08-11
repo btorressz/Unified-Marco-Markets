@@ -150,6 +150,10 @@ const API = (() => {
     getRedisHealth: () => fetchJSON('/api/health/redis'),
 
     getDataQuality: () => fetchJSON('/api/health/data-quality'),
+    getIngestionRegistry: () => fetchJSON('/api/ingestion/registry'),
+    getIngestionStatus: () => fetchJSON('/api/ingestion/status'),
+    getIngestionRuns: (params = {}) => fetchJSON(`/api/ingestion/runs?${new URLSearchParams(Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== '')).toString()}`),
+    getDataProvenance: (params = {}) => fetchJSON(`/api/ingestion/provenance?${new URLSearchParams(Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== '')).toString()}`),
     getStrategyPerformance: () => fetchJSON('/api/strategy/performance'),
     postAllocationExecutionPreview: (body) => postJSON('/api/allocation/execution-preview', body),
     postConditionalOrder: (body) => postJSON('/api/execution/conditional-order', body),

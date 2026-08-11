@@ -26,6 +26,7 @@ const App = (() => {
     initScenarioForm();
     initGeoScenarioForm();
     initEquityControls();
+    initProvenanceInspector();
     initFeedStatusToggle();
     initAutoRefreshToggle();
     initTimeframeSelectors();
@@ -629,6 +630,19 @@ const App = (() => {
     });
     UI.renderInstitutionalLayer({ sensitivity: sensitivity.status === 'fulfilled' ? sensitivity.value : null, correlations: correlations.status === 'fulfilled' ? correlations.value : null, contagion: contagion.status === 'fulfilled' ? contagion.value : null, watchlists: watchlists.status === 'fulfilled' ? watchlists.value : null, dailyBrief: dailyBrief.status === 'fulfilled' ? dailyBrief.value : null, tariffReport: tariffReport.status === 'fulfilled' ? tariffReport.value : null });
 
+  }
+
+  async function refreshIngestionStatus() {
+    const [registry, status] = await Promise.allSettled([API.getIngestionRegistry(), API.getIngestionStatus()]);
+    if (registry.status === 'fulfilled') UI.renderIngestionRegistry(registry.value);
+    if (status.status === 'fulfilled') UI.renderIngestionStatus(status.value);
+  }
+  async function refreshIngestionRuns() { try { UI.renderIngestionRuns(await API.getIngestionRuns({limit: 30})); } catch (_) {} }
+  function initProvenanceInspector() {
+    const form=document.getElementById('provenance-form'); if(!form)return;
+    form.addEventListener('submit', async event => { event.preventDefault(); const params=Object.fromEntries(new FormData(form)); UI.renderDataProvenance(await API.getDataProvenance(params)); });
+    refreshIngestionStatus(); refreshIngestionRuns();
+    setInterval(refreshIngestionStatus, 30000); setInterval(refreshIngestionRuns, 60000);
   }
 
 

@@ -15,13 +15,21 @@ class IndexRepository:
         roc: float,
         shock: float,
         components: dict | None = None,
+        lineage: dict | None = None,
     ) -> dict | None:
         try:
-            return execute_returning(
+            row = execute_returning(
                 """INSERT INTO index_history (index_level, rate_of_change, shock_score, components, ts)
                    VALUES (%s, %s, %s, %s, %s) RETURNING id, index_level, rate_of_change, shock_score, components, ts""",
                 (index_level, roc, shock, json.dumps(components or {}), datetime.now(timezone.utc)),
             )
+            if row and lineage:
+                try:
+                    from backend.data.repositories.ingest_repo import IngestRepository
+                    IngestRepository().record_provenance(lineage.get("ingest_run_id"), lineage.get("source_id", "derived_index"), "index_snapshot", artifact_id=row.get("id"), lineage=lineage)
+                except Exception:
+                    logger.warning("Failed to record index snapshot provenance", exc_info=True)
+            return row
         except Exception:
             logger.error("Failed to save index", exc_info=True)
             return None
