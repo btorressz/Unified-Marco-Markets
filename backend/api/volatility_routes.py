@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter
 
 from backend.compute.vol_regime_engine import classify_regime, get_recommendations
+from backend.core.state_keys import STABLECOIN_HEALTH, STABLECOIN_HEALTH_LEGACY
 from backend.core.state_store import StateStore
 from backend.core.event_bus import EventBus, EventType
 
@@ -17,6 +18,15 @@ _bus = EventBus()
 _REGIME_KEY = "desk:vol_regime:latest"
 _REGIME_TTL = 60
 _PREV_REGIME: str | None = None
+
+
+def _stable_assets(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(snapshot, dict):
+        return {}
+    assets = snapshot.get("assets")
+    if isinstance(assets, dict):
+        return assets
+    return {key: value for key, value in snapshot.items() if isinstance(value, dict) and "depeg_bps" in value}
 
 
 def _collect_vol_state() -> dict[str, Any]:
@@ -38,14 +48,13 @@ def _collect_vol_state() -> dict[str, Any]:
     if "annualized_vol" not in state:
         state["annualized_vol"] = 0.45
 
-    stable = _store.get_snapshot("stablecoin:health:latest")
-    if stable:
-        assets = stable.get("assets", {})
-        if assets:
-            state["stable_health"] = sum(
-                1.0 - min(abs(a.get("depeg_bps", 0)) / 100.0, 1.0)
-                for a in assets.values()
-            ) / len(assets)
+    stable = _store.get_snapshot(STABLECOIN_HEALTH) or _store.get_snapshot(STABLECOIN_HEALTH_LEGACY)
+    assets = _stable_assets(stable)
+    if assets:
+        state["stable_health"] = sum(
+            1.0 - min(abs(a.get("depeg_bps", 0)) / 100.0, 1.0)
+            for a in assets.values()
+        ) / len(assets)
 
     ms = _store.get_snapshot("microstructure:latest")
     if ms:
