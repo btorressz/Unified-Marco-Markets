@@ -337,3 +337,20 @@ CREATE TABLE IF NOT EXISTS ml_predictions (
  id UUID PRIMARY KEY DEFAULT gen_random_uuid(), input_hash CHAR(64) NOT NULL, payload JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_ml_predictions_created ON ml_predictions(created_at DESC);
+
+-- Immutable, compact linkage across decision layers. This stores intent only;
+-- it has no relationship to order routing or execution persistence.
+CREATE TABLE IF NOT EXISTS decision_audit (
+ id UUID PRIMARY KEY DEFAULT gen_random_uuid(), decision_ts TIMESTAMPTZ NOT NULL,
+ decision_type VARCHAR(100) NOT NULL, venue VARCHAR(50), market VARCHAR(100), symbol VARCHAR(100),
+ input_state JSONB NOT NULL DEFAULT '{}', input_provenance JSONB NOT NULL DEFAULT '{}',
+ derived_state JSONB NOT NULL DEFAULT '{}', heuristic_result JSONB NOT NULL DEFAULT '{}',
+ ml_result JSONB NOT NULL DEFAULT '{}', risk_result JSONB NOT NULL DEFAULT '{}',
+ allocation_result JSONB NOT NULL DEFAULT '{}', execution_intent JSONB NOT NULL DEFAULT '{}',
+ component_versions JSONB NOT NULL DEFAULT '{}', config_snapshot JSONB NOT NULL DEFAULT '{}',
+ final_decision JSONB NOT NULL DEFAULT '{}', decision_hash CHAR(64) NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_decision_audit_ts ON decision_audit(decision_ts DESC);
+CREATE INDEX IF NOT EXISTS idx_decision_audit_type_ts ON decision_audit(decision_type, decision_ts DESC);
+CREATE INDEX IF NOT EXISTS idx_decision_audit_market_ts ON decision_audit(venue, market, decision_ts DESC);

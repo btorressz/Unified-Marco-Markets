@@ -1602,6 +1602,24 @@ const UI = (() => {
   }
   function renderHeuristicPerformanceError(message) { const panel=document.getElementById('heuristic-performance-panel'); if(panel) panel.innerHTML=`<div class="research-warning error">${escapeHtml(message)}<br>No synthetic fallback was used.</div>`; }
 
+  const decisionJson = value => `<details><summary>Recorded JSON</summary><pre>${escapeHtml(JSON.stringify(value || {}, null, 2))}</pre></details>`;
+  function renderDecisionList(data) {
+    const panel=document.getElementById('decision-audit-list'); if(!panel)return;
+    const rows=data.decisions||[];
+    panel.innerHTML=`<div class="table-scroll"><table><thead><tr><th>Time</th><th>Decision ID</th><th>Market</th><th>Final Decision</th><th>Heuristic</th><th>ML Model</th><th>Risk</th><th>Execution Mode</th><th>Replay Status</th></tr></thead><tbody>${rows.map(d=>`<tr class="decision-row" onclick="App.showDecision('${escapeHtml(d.id)}')"><td>${safeValue(d.decision_ts)}</td><td><code>${escapeHtml(String(d.id).slice(0,8))}</code></td><td>${safeValue(d.market||d.symbol)}</td><td>${safeValue(d.final_decision?.decision||d.final_decision?.action)}</td><td>${safeValue(d.component_versions?.heuristic||d.heuristic_result?.heuristic_id)}</td><td>${safeValue(d.ml_result?.model_version||d.component_versions?.model_version)}</td><td>${d.risk_result?.approved===true?'APPROVED':d.risk_result?.approved===false?'REJECTED':'N/A'}</td><td>${safeValue(d.execution_intent?.execution_mode)}</td><td>${safeValue(d.replay_status||'NOT RUN')}</td></tr>`).join('')||`<tr><td colspan="9">${escapeHtml(data.error||'No decisions recorded.')}</td></tr>`}</tbody></table></div>`;
+  }
+  function renderDecisionDetail(d) {
+    const panel=document.getElementById('decision-audit-detail');if(!panel)return;
+    if(d.error){panel.textContent=d.error;return;}
+    const sections=[['Input State',d.input_state],['Data Provenance',d.input_provenance],['Derived State',d.derived_state],['Heuristic',d.heuristic_result],['ML',d.ml_result],['Risk',d.risk_result],['Allocation',d.allocation_result],['Execution Intent',d.execution_intent],['Component Versions',d.component_versions],['Config Snapshot',d.config_snapshot]];
+    panel.innerHTML=`<h3>Decision Summary</h3><p><strong>${safeValue(d.decision_type)}</strong> · ${safeValue(d.venue)} ${safeValue(d.market||d.symbol)}</p>${decisionJson(d.final_decision)}${sections.map(([name,value])=>`<h4>${name}</h4>${decisionJson(value)}`).join('')}<h4>Decision Hash</h4><code class="decision-hash">${escapeHtml(d.decision_hash||'N/A')}</code><p><button class="btn-primary" onclick="App.replayDecision('${escapeHtml(d.id)}')">Replay Decision</button></p><div class="audit-only-banner"><strong>RESEARCH / AUDIT ONLY</strong> — Replay never submits orders.</div>`;
+  }
+  function renderDecisionReplay(result) {
+    const panel=document.getElementById('decision-replay-result');if(!panel)return;
+    const label=result.exact_match?'EXACT MATCH':result.replay_status==='unavailable'?'UNAVAILABLE':'MISMATCH';
+    panel.innerHTML=`<div class="replay-verdict ${result.exact_match?'match':'mismatch'}">${label}</div>${result.reason?`<p>${escapeHtml(result.reason)}</p>`:''}<p>Original: <code>${escapeHtml(result.original_hash||'N/A')}</code><br>Replay: <code>${escapeHtml(result.replay_hash||'N/A')}</code></p>${(result.differences||[]).length?`<h4>Differing fields</h4>${decisionJson(result.differences)}`:''}<div class="audit-only-banner"><strong>RESEARCH / AUDIT ONLY</strong> — Replay never submits orders.</div>`;
+  }
+
   const auditTable = (headers, rows) => `<div class="table-scroll"><table><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')||`<tr><td colspan="${headers.length}">No durable history available.</td></tr>`}</tbody></table></div>`;
   const auditValue = value => value === null || value === undefined || value === '' ? 'N/A' : escapeHtml(String(value));
   function renderIngestionRegistry(data) { const p=document.getElementById('ingestion-registry-panel'); if(!p)return; p.innerHTML=auditTable(['Source','Provider','Category','Cadence','Authoritative','Fallback Chain','Storage'],(data.sources||[]).map(s=>`<tr><td>${auditValue(s.source_id)}</td><td>${auditValue(s.provider)}</td><td>${auditValue(s.category)}</td><td>${auditValue(s.expected_cadence_seconds)}s</td><td>${s.authoritative?'Yes':'No'}</td><td>${auditValue((s.fallback_chain||[]).join(' → '))}</td><td>${auditValue(s.storage_target)}</td></tr>`)); }
@@ -1648,6 +1666,9 @@ const UI = (() => {
     renderStrategyPerformance,
     renderHeuristicPerformance,
     renderHeuristicPerformanceError,
+    renderDecisionList,
+    renderDecisionDetail,
+    renderDecisionReplay,
     renderIngestionRegistry,
     renderIngestionStatus,
     renderIngestionRuns,

@@ -34,6 +34,7 @@
       <button class="tab-btn" data-tab="geopolitics">Geopolitics</button>
       <button class="tab-btn" data-tab="risk">Risk</button>
       <button class="tab-btn" data-tab="agents">Agents</button>
+      <button class="tab-btn" data-tab="decisions">Decision Audit</button>
     </nav>
 
     <div class="main-content">
@@ -756,6 +757,17 @@
         <div class="card" id="agent-performance-panel"><div class="empty-state"><div class="empty-state-text">Loading agent performance...</div></div></div>
         <div class="section-title">Signal History</div>
         <div class="card" id="agent-history-panel"><div class="empty-state"><div class="empty-state-text">Loading signal history...</div></div></div>
+      </div>
+
+      <!-- DECISION AUDIT TAB -->
+      <div id="tab-decisions" class="tab-panel">
+        <div class="audit-only-banner"><strong>RESEARCH / AUDIT ONLY</strong><br>Replay never submits orders.</div>
+        <div class="section-title">Recent Decisions</div>
+        <div class="card" id="decision-audit-list"><div class="empty-state-text">Loading durable decisions...</div></div>
+        <div class="section-title">Decision Detail</div>
+        <div class="card" id="decision-audit-detail"><div class="empty-state-text">Select a decision to inspect its recorded state.</div></div>
+        <div class="section-title">Replay Result</div>
+        <div class="card" id="decision-replay-result"><div class="empty-state-text">Replay is only run when requested.</div></div>
       </div>
 
     </div>

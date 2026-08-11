@@ -224,6 +224,9 @@ const API = (() => {
     getGeopoliticalAgentSignals: () => fetchJSON('/api/geopolitical/agents/signals'),
     getGeopoliticalDailyBrief: () => fetchJSON('/api/geopolitical/reports/daily-brief'),
     getGeopoliticalProtectionBrief: () => fetchJSON('/api/geopolitical/reports/protection-brief'),
+    getDecisions: (params = {}) => fetchJSON(`/api/decisions?${new URLSearchParams(Object.entries(params).filter(([,v]) => v !== undefined && v !== null)).toString()}`),
+    getDecision: (id) => fetchJSON(`/api/decisions/${encodeURIComponent(id)}`),
+    postDecisionReplay: (id) => postJSON(`/api/decisions/${encodeURIComponent(id)}/replay`, {}),
 
   };
 })();
