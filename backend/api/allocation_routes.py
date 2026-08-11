@@ -5,6 +5,14 @@ from typing import Any
 from fastapi import APIRouter
 
 from backend.compute.capital_allocator import allocate, execution_preview
+from backend.core.state_keys import (
+    PREDICTION_LATEST,
+    PREDICTION_LATEST_LEGACY,
+    PRICE_INTEGRITY,
+    PRICE_INTEGRITY_LEGACY_LATEST,
+    STABLECOIN_HEALTH,
+    STABLECOIN_HEALTH_LEGACY,
+)
 from backend.core.state_store import StateStore
 from backend.core.event_bus import EventBus, EventType
 
@@ -16,6 +24,15 @@ _bus = EventBus()
 
 _CACHE_KEY = "desk:allocation:latest"
 _CACHE_TTL = 60
+
+
+def _stable_assets(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(snapshot, dict):
+        return {}
+    assets = snapshot.get("assets")
+    if isinstance(assets, dict):
+        return assets
+    return {key: value for key, value in snapshot.items() if isinstance(value, dict) and "depeg_bps" in value}
 
 
 def _build_state_from_redis() -> dict[str, Any]:
@@ -31,15 +48,15 @@ def _build_state_from_redis() -> dict[str, Any]:
         state["shock_score"] = shock.get("shock_score", 0.0)
 
     for key in ["vol_regime", "annualized_vol"]:
-        snap = _store.get_snapshot(f"desk:vol_regime:latest") or _store.get_snapshot("vol_regime:latest")
+        snap = _store.get_snapshot("desk:vol_regime:latest") or _store.get_snapshot("vol_regime:latest")
         if snap:
             state["vol_regime"] = snap.get("regime", "normal")
             break
 
-    pred = _store.get_snapshot("predict:latest")
+    pred = _store.get_snapshot(PREDICTION_LATEST) or _store.get_snapshot(PREDICTION_LATEST_LEGACY)
     if pred:
         state["predictor_confidence"] = pred.get("confidence", 0.5)
-        state["predictor_prob"] = pred.get("probability", 0.5)
+        state["predictor_prob"] = pred.get("probability", pred.get("probability_up", 0.5))
 
     arb = _store.get_snapshot("funding_arb:latest")
     if arb:
@@ -49,23 +66,22 @@ def _build_state_from_redis() -> dict[str, Any]:
     if basis:
         state["basis_opportunity"] = basis.get("feasibility_score", 0.0)
 
-    stable = _store.get_snapshot("stablecoin:health:latest")
-    if stable:
-        assets = stable.get("assets", {})
-        if assets:
-            avg_health = sum(
-                1.0 - min(abs(a.get("depeg_bps", 0)) / 100.0, 1.0)
-                for a in assets.values()
-            ) / len(assets)
-            state["stable_health"] = avg_health
+    stable = _store.get_snapshot(STABLECOIN_HEALTH) or _store.get_snapshot(STABLECOIN_HEALTH_LEGACY)
+    assets = _stable_assets(stable)
+    if assets:
+        avg_health = sum(
+            1.0 - min(abs(a.get("depeg_bps", 0)) / 100.0, 1.0)
+            for a in assets.values()
+        ) / len(assets)
+        state["stable_health"] = avg_health
 
     eqi = _store.get_snapshot("execution:metrics:latest")
     if eqi:
         state["exec_quality"] = eqi.get("eqi_score", 0.8)
 
-    integrity = _store.get_snapshot("price:integrity:latest")
+    integrity = _store.get_snapshot(PRICE_INTEGRITY) or _store.get_snapshot(PRICE_INTEGRITY_LEGACY_LATEST)
     if integrity:
-        state["price_integrity"] = integrity.get("status", "ok")
+        state["price_integrity"] = integrity.get("status", "UNKNOWN")
 
     portfolio = _store.get_snapshot("portfolio:latest")
     if portfolio:
