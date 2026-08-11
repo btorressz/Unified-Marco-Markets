@@ -36,6 +36,8 @@ def evaluate_rules():
         for a in actions:
             results.append(RuleActionResponse(
                 rule_name=a["rule_name"],
+                rule_id=a.get("rule_id"), rule_version=a.get("rule_version"),
+                evaluation_type=a.get("evaluation_type"), expected_direction=a.get("expected_direction"),
                 action_type=a["action_type"],
                 venue=a.get("venue", ""),
                 market=a.get("market", ""),
@@ -56,11 +58,7 @@ def get_status():
     try:
         rules_info = []
         for rule in _rules_engine.rules:
-            rules_info.append({
-                "name": rule["name"],
-                "action_type": rule["action_type"],
-                "explanation": rule["explanation"],
-            })
+            rules_info.append({key: value for key, value in rule.items() if key != "condition"})
         return {
             "rules": rules_info,
             "rule_count": len(rules_info),

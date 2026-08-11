@@ -1187,3 +1187,9 @@ tbody tr:hover {
 details { margin-top:8px; } details summary { cursor:pointer;color:var(--text-secondary);font-size:11px; } details pre { white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg-secondary);padding:8px;border:1px solid var(--border-color); }
 @media (max-width: 720px) { .lifecycle-step { grid-template-columns:1fr; }.lifecycle-step small { grid-column:auto; }.alignment-grid,.execution-safety-grid,.accounting-grid,.telemetry-grid,.risk-breakdown-grid { grid-template-columns:1fr 1fr; } }
 @media (max-width: 440px) { .alignment-grid,.execution-safety-grid,.accounting-grid,.telemetry-grid,.risk-breakdown-grid { grid-template-columns:1fr; } }
+/* Research-only heuristic validation: presentation never changes rule behavior. */
+.heuristic-lab .research-warning { margin-bottom: 14px; border-left: 3px solid var(--accent-yellow); padding: 10px; }
+.heuristic-results { margin-top: 14px; }
+.sample-badge { display:inline-block; font-size:9px; padding:2px 5px; border:1px solid var(--border); border-radius:8px; }
+.heuristic-detail { margin-top:10px; padding:10px; border:1px solid var(--border); border-radius:6px; }
+.heuristic-detail summary { cursor:pointer; font-weight:600; }
