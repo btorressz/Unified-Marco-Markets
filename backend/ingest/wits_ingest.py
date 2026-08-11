@@ -11,6 +11,7 @@ from backend.core.state_store import StateStore
 logger = logging.getLogger(__name__)
 
 WITS_BASE_URL = "https://wits.worldbank.org/API/V1/SDMX/V21/rest/data"
+WITS_AGGREGATE_SNAPSHOT_KEY = "wits:tariff:aggregate"
 
 _SAMPLE_TARIFF_DATA = [
     {"reporter": "USA", "partner": "CHN", "product": "TOTAL", "year": 2025, "tariff_rate": 19.3, "trade_value": 450000},
@@ -42,17 +43,25 @@ class WITSIngestor:
                 if not records:
                     logger.warning("WITS returned empty data for %s->%s [%s]", reporter, partner, product)
                     df = self._fallback_data()
-                    if run_context: run_context.record_received(len(df)); run_context.mark_fallback(fallback_type="sample", reason="provider_empty_response")
+                    if run_context:
+                        run_context.record_received(len(df))
+                        run_context.mark_fallback(fallback_type="sample", reason="provider_empty_response")
                     return df
                 df = pd.DataFrame(records)
-                if run_context: run_context.mark_success(); run_context.record_received(len(df))
+                if run_context:
+                    run_context.mark_success()
+                    run_context.record_received(len(df))
                 self._store_and_emit(df, reporter, partner, product)
-                if run_context: run_context.record_persisted(len(df))
+                if run_context:
+                    run_context.record_persisted(len(df))
                 return df
         except Exception as exc:
             logger.warning("WITS API failed for %s->%s [%s], using cached/sample data", reporter, partner, product, exc_info=True)
             df = self._fallback_data()
-            if run_context: run_context.record_received(len(df)); run_context.mark_failure(exc); run_context.mark_fallback(fallback_type="sample", reason="provider_request_failure")
+            if run_context:
+                run_context.record_received(len(df))
+                run_context.mark_failure(exc)
+                run_context.mark_fallback(fallback_type="sample", reason="provider_request_failure")
             return df
 
     def _parse_response(self, data: dict) -> list[dict]:
@@ -93,6 +102,28 @@ class WITSIngestor:
             },
         )
 
+    def _store_aggregate_freshness(self, results: list[pd.DataFrame], run_context=None) -> None:
+        """Publish one canonical freshness beacon for the configured WITS sweep.
+
+        Individual country/product snapshots remain unchanged. This aggregate
+        snapshot gives feed-health a stable key regardless of configured WITS
+        countries/products; provider reliability/fallback remains sourced from
+        the durable ingest-run ledger rather than inferred from this beacon.
+        """
+        self.state_store.set_snapshot(
+            WITS_AGGREGATE_SNAPSHOT_KEY,
+            {
+                "reporter": "840",
+                "countries": list(WITS_COUNTRIES),
+                "products": list(WITS_PRODUCTS),
+                "batch_count": len(results),
+                "records_returned": sum(len(df) for df in results),
+                "fallback_used": bool(getattr(run_context, "fallback_used", False)),
+                "ts": datetime.now(timezone.utc).isoformat(),
+            },
+            ttl=86400,
+        )
+
     async def fetch_all(self, run_context=None) -> list[pd.DataFrame]:
         results = []
         for country in WITS_COUNTRIES:
@@ -102,4 +133,8 @@ class WITSIngestor:
                     results.append(df)
                 except Exception:
                     logger.warning("Failed to fetch WITS data for %s/%s", country, product, exc_info=True)
+        try:
+            self._store_aggregate_freshness(results, run_context=run_context)
+        except Exception:
+            logger.warning("Failed to publish WITS aggregate freshness snapshot", exc_info=True)
         return results
