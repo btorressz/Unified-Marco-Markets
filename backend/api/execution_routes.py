@@ -22,6 +22,8 @@ from backend.execution.router import ExecutionRouter
 from backend.execution.jupiter_exec import JupiterExecutor
 from backend.data.repositories.positions_repo import PositionsRepository
 from backend.data.repositories.orders_repo import OrdersRepository
+from backend.data.repositories.decision_repo import DecisionRepository
+from backend.compute.decision_replay import decision_hash
 from backend.compute.smart_execution import create_smart_order, get_all_executions, get_execution
 
 logger = logging.getLogger(__name__)
@@ -32,6 +34,7 @@ _exec_router = ExecutionRouter()
 _jupiter = JupiterExecutor()
 _positions_repo = PositionsRepository()
 _orders_repo = OrdersRepository()
+_decision_repo = DecisionRepository()
 _state_store = StateStore()
 
 
@@ -375,11 +378,12 @@ def place_order(req: OrderRequest):
         request_id = req.request_id or str(uuid.uuid4())
         client_order_id = req.client_order_id or request_id
         idempotency_key = req.idempotency_key or client_order_id
+        decision_id = req.decision_id or str(uuid.uuid4())
         order_context = {
             "client_order_id": client_order_id,
             "request_id": request_id,
             "strategy_id": req.strategy_id,
-            "decision_id": req.decision_id,
+            "decision_id": decision_id,
             "idempotency_key": idempotency_key,
         }
 
@@ -410,6 +414,25 @@ def place_order(req: OrderRequest):
         if idempotency_status == "unavailable":
             idempotency_status = "degraded"
 
+        decision_ts = datetime.now(timezone.utc)
+        audit = {"id": decision_id, "decision_ts": decision_ts, "decision_type": "execution_admission",
+                 "venue": req.venue, "market": req.market, "symbol": req.market,
+                 "input_state": {"replay_inputs": {"heuristic": {"status": "not_used"}, "ml": {"status": "not_used"},
+                    "allocation": {"status": "not_used"}, "risk": {"status": "not_used"},
+                    "final_decision": {"action": "submit_to_execution_risk_boundary"}}},
+                 "input_provenance": {"provenance_status": "complete", "source": "execution_order_request"},
+                 "derived_state": {}, "heuristic_result": {"status": "not_used"}, "ml_result": {"status": "not_used"},
+                 "risk_result": {"status": "not_used"}, "allocation_result": {"status": "not_used"},
+                 "execution_intent": {"execution_mode": _exec_router.mode, "request_id": request_id,
+                    "client_order_id": client_order_id, "order": req.model_dump()},
+                 "component_versions": {}, "config_snapshot": {},
+                 "final_decision": {"action": "submit_to_execution_risk_boundary"}}
+        audit["decision_hash"] = decision_hash(audit)
+        try:
+            _decision_repo.create(audit)
+        except Exception:
+            logger.warning("Decision audit persistence unavailable", exc_info=True)
+
         intent = _orders_repo.create_intent(
             request_id=request_id,
             client_order_id=client_order_id,
@@ -421,7 +444,7 @@ def place_order(req: OrderRequest):
             order_type=req.order_type,
             price=req.price,
             strategy_id=req.strategy_id,
-            decision_id=req.decision_id,
+            decision_id=decision_id,
             payload={"slippage_bps": req.slippage_bps},
         )
         persistence_status = "persisted" if intent else "degraded"
@@ -467,6 +490,7 @@ def place_order(req: OrderRequest):
             slippage_bps=req.slippage_bps,
             order_context=order_context,
         )
+        result["decision_id"] = decision_id
         result["idempotency_status"] = idempotency_status
         result = _persist_execution_result(req, result, order_context, intent)
 

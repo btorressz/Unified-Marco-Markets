@@ -1317,7 +1317,7 @@ const UI = (() => {
     }
     const ap = document.getElementById('signal-attribution-panel');
     if (ap) {
-      const a = attribution || {};
+      const a = attribution || {}; if (a.data_status === 'no_realized_outcomes') { ap.innerHTML = '<div class="empty-state-text">UNAVAILABLE — NO REALIZED OUTCOMES</div>'; return; }
       ap.innerHTML = `<div class="metric-row"><div class="metric-box"><div class="metric-label">Hit Rate</div><div class="metric-value green">${(Number(a.hit_rate || 0) * 100).toFixed(0)}%</div></div><div class="metric-box"><div class="metric-label">Signals</div><div class="metric-value blue">${a.signal_count || 0}</div></div><div class="metric-box"><div class="metric-label">PnL Impact</div><div class="metric-value ${Number(a.pnl_impact || 0) >= 0 ? 'green' : 'red'}">${formatPrice(a.pnl_impact)}</div></div></div>`;
     }
   }
@@ -1338,6 +1338,7 @@ const UI = (() => {
     const panel = document.getElementById('strategy-performance-panel');
     if (!panel) return;
     const rows = Object.values((data || {}).strategies || {});
+    if (data.data_status === 'no_realized_history') { panel.innerHTML = '<div class="card-header"><span class="card-title">Strategy Comparison</span></div><div class="empty-state-text">NO REALIZED HISTORY</div>'; return; }
     panel.innerHTML = `<div class="card-header"><span class="card-title">Strategy Comparison</span></div><div class="metric-row">${rows.slice(0,4).map(r => `<div class="metric-box"><div class="metric-label">${r.strategy_id}</div><div class="metric-value ${Number(r.total_pnl || 0) >= 0 ? 'green' : 'red'}">${formatPrice(r.total_pnl || 0)}</div><div style="font-size:11px;color:var(--text-muted)">Sharpe ${formatNumber(r.sharpe, 2)} · DD ${(Number(r.max_drawdown || 0) * 100).toFixed(1)}% · Win ${(Number(r.win_rate || 0) * 100).toFixed(0)}%</div></div>`).join('')}</div><div class="table-scroll"><table><thead><tr><th>Strategy</th><th>PnL</th><th>Sharpe</th><th>Max DD</th><th>Win</th><th>Trades</th><th>Avg Slip</th></tr></thead><tbody>${rows.map(r => `<tr><td>${r.strategy_id}</td><td>${formatPrice(r.total_pnl)}</td><td>${formatNumber(r.sharpe, 2)}</td><td>${(Number(r.max_drawdown || 0) * 100).toFixed(1)}%</td><td>${(Number(r.win_rate || 0) * 100).toFixed(0)}%</td><td>${r.trade_count}</td><td>${formatNumber(r.avg_slippage_bps, 1)} bps</td></tr>`).join('') || '<tr><td colspan="7">No strategy data</td></tr>'}</tbody></table></div><div style="font-size:11px;color:var(--text-muted);margin-top:6px">Best: ${(data.summary || {}).best_strategy || '--'} · Worst: ${(data.summary || {}).worst_strategy || '--'} · ${data.capital_allocation_feedback || ''}</div>`;
   }
 
@@ -1367,12 +1368,12 @@ const UI = (() => {
     const p = document.getElementById('agent-performance-panel');
     if (p) {
       const rows = (perf || {}).agents || [];
-      p.innerHTML = `<div class="metric-row">${rows.map(r => `<div class="metric-box"><div class="metric-label">${r.agent}</div><div class="metric-value blue">${(Number(r.hit_rate || 0) * 100).toFixed(0)}%</div><div style="font-size:11px;color:var(--text-muted)">${r.signal_count} signals · conf ${(Number(r.average_confidence || 0) * 100).toFixed(0)}%</div></div>`).join('') || '<div class="empty-state-text">No memory records yet</div>'}</div>`;
+      p.innerHTML = `<div class="metric-row">${rows.map(r => `<div class="metric-box"><div class="metric-label">${r.agent}</div><div class="metric-value blue">${r.hit_rate == null ? 'UNEVALUATED' : (Number(r.hit_rate) * 100).toFixed(0) + '%'}</div><div style="font-size:11px;color:var(--text-muted)">${r.signal_count} signals · conf ${(Number(r.average_confidence || 0) * 100).toFixed(0)}%</div></div>`).join('') || '<div class="empty-state-text">No memory records yet</div>'}</div>`;
     }
     const h = document.getElementById('agent-history-panel');
     if (h) {
       const rows = (hist || {}).history || [];
-      h.innerHTML = `<div class="table-scroll"><table><thead><tr><th>Agent</th><th>Ticker</th><th>Signal</th><th>Conf</th><th>Outcome</th></tr></thead><tbody>${rows.slice(0,25).map(r => `<tr><td>${r.agent}</td><td>${r.ticker || '--'}</td><td>${r.signal}</td><td>${(Number(r.confidence || 0) * 100).toFixed(0)}%</td><td>${formatNumber(r.realized_outcome, 4)}</td></tr>`).join('') || '<tr><td colspan="5">No signal history</td></tr>'}</tbody></table></div>`;
+      h.innerHTML = `<div class="table-scroll"><table><thead><tr><th>Agent</th><th>Ticker</th><th>Signal</th><th>Conf</th><th>Outcome</th></tr></thead><tbody>${rows.slice(0,25).map(r => `<tr><td>${r.agent}</td><td>${r.ticker || '--'}</td><td>${r.signal}</td><td>${(Number(r.confidence || 0) * 100).toFixed(0)}%</td><td>${r.realized_outcome == null ? 'UNEVALUATED' : formatNumber(r.realized_outcome, 4)}</td></tr>`).join('') || '<tr><td colspan="5">No signal history</td></tr>'}</tbody></table></div>`;
     }
   }
 

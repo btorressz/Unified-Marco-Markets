@@ -55,7 +55,7 @@ def _apply_caps(weights: dict[str, float]) -> dict[str, float]:
     return _normalize(capped)
 
 
-def allocate(state: dict[str, Any] | None = None) -> dict[str, Any]:
+def allocate(state: dict[str, Any] | None = None, *, as_of: datetime | None = None) -> dict[str, Any]:
     state = state or {}
     reasoning: list[str] = []
 
@@ -174,7 +174,7 @@ def allocate(state: dict[str, Any] | None = None) -> dict[str, Any]:
             "exec_quality": exec_quality,
             "price_integrity": price_integrity,
         },
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": (as_of or datetime.now(timezone.utc)).isoformat(),
     }
 
 

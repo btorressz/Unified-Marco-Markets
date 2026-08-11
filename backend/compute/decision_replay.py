@@ -77,13 +77,21 @@ def _unavailable(reason: str, record: dict[str, Any]) -> dict[str, Any]:
     return {"replay_status": "unavailable", "status": "UNAVAILABLE", "reason": reason,
             "original_decision": canonical_decision_state(record), "replayed_decision": None,
             "original_hash": record.get("decision_hash") or decision_hash(record), "replay_hash": None,
-            "exact_match": False, "differences": []}
+            "exact_match": False, "differences": [], "audit_only": True, "orders_submitted": 0}
 
 
 def replay_decision(record: dict[str, Any], *, model_loader: Callable[[str], Any] | None = None,
                     heuristic_versions: set[str] | None = None,
                     replay_builder: Callable[[dict[str, Any]], dict[str, Any]] | None = None) -> dict[str, Any]:
     """Reconstruct a decision using only its stored snapshot and exact identities."""
+    if replay_builder is None:
+        try:
+            from backend.compute.decision_evaluator import recompute_decision
+            rebuilt = recompute_decision(record, model_loader=model_loader)
+        except Exception as exc:
+            return _unavailable(str(exc), record)
+    else:
+        rebuilt = replay_builder(dict(record))
     versions = record.get("component_versions") or {}
     heuristic = versions.get("heuristic") or versions.get("heuristics")
     requested = []
@@ -95,7 +103,7 @@ def replay_decision(record: dict[str, Any], *, model_loader: Callable[[str], Any
         missing = [item for item in requested if item not in heuristic_versions]
         if missing: return _unavailable(f"required heuristic version unavailable: {', '.join(missing)}", record)
 
-    ml = record.get("ml_result") or {}
+    ml = ((record.get("input_state") or {}).get("replay_inputs") or {}).get("ml") or {}
     model_id = ml.get("model_id") or versions.get("model_id")
     if model_id and not ml.get("fallback_used", False):
         if model_loader is None:
@@ -109,7 +117,7 @@ def replay_decision(record: dict[str, Any], *, model_loader: Callable[[str], Any
             return _unavailable("required ML artifact SHA-256 does not match", record)
 
     original = canonical_decision_state(record)
-    replayed = canonical_decision_state(replay_builder(dict(record)) if replay_builder else record)
+    replayed = canonical_decision_state(rebuilt)
     original_hash = record.get("decision_hash") or decision_hash(record)
     replay_hash = hashlib.sha256(canonical_json(replayed).encode("utf-8")).hexdigest()
     differences = structured_diff(original, replayed)
