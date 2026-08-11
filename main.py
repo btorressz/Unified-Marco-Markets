@@ -11,7 +11,7 @@ def create_app():
     from contextlib import asynccontextmanager
     from fastapi import FastAPI
     from fastapi.staticfiles import StaticFiles
-    from fastapi.responses import FileResponse
+    from fastapi.responses import HTMLResponse
 
     @asynccontextmanager
     async def lifespan(application):
@@ -143,9 +143,13 @@ def create_app():
     app.include_router(geopolitical_router)
     app.include_router(protection_router)
 
-    @app.get("/")
+    @app.get("/", response_class=HTMLResponse)
     def root():
-        return FileResponse(str(frontend_dir / "index.html"), headers={"Cache-Control": "no-cache"})
+        html = (frontend_dir / "index.html").read_text(encoding="utf-8")
+        alignment_script = '<script src="/frontend/assets/frontend_alignment.js"></script>'
+        if alignment_script not in html:
+            html = html.replace("</body>", f"  {alignment_script}\n</body>")
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
     logger.info("Tariff Risk Desk API initialized with all routes")
     return app

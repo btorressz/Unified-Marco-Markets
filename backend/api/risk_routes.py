@@ -1,4 +1,5 @@
 import logging
+import math
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
@@ -9,6 +10,7 @@ from backend.compute.risk_engine import RiskEngine
 from backend.compute.stress_tests import StressTestRunner
 from backend.compute.regime_memory import RegimeMemory
 from backend.core.state_store import StateStore
+from backend.data.repositories.positions_repo import PositionsRepository
 from backend.execution.router import ExecutionRouter
 from backend import config
 
@@ -24,6 +26,7 @@ _risk_engine = RiskEngine(
 )
 _stress_runner = StressTestRunner()
 _state_store = StateStore()
+_positions_repo = PositionsRepository()
 _exec_router = ExecutionRouter()
 _regime_memory = RegimeMemory()
 
@@ -38,11 +41,26 @@ def get_status():
     try:
         status = _risk_engine.get_status()
         throttle = _state_store.get_risk_throttle()
+
+        # Use the durable position view for read-only portfolio metrics. This
+        # avoids reporting hard-coded zero leverage/margin values while keeping
+        # execution routing and risk policy unchanged.
+        positions = _positions_repo.get_all()
+        account = dict(_state_store.get_snapshot("execution:account") or {})
+        snapshot = _risk_engine.build_portfolio_snapshot(positions, account=account)
+        metrics = _risk_engine.calculate_metrics(snapshot)
+        leverage = float(metrics.get("gross_leverage", 0.0) or 0.0)
+        margin_usage = float(metrics.get("margin_utilization", 0.0) or 0.0)
+        if not math.isfinite(leverage):
+            leverage = 0.0
+        if not math.isfinite(margin_usage):
+            margin_usage = 0.0
+
         return RiskStatusResponse(
             throttle_active=throttle.get("active", False) or status.get("throttle_active", False),
             throttle_reason=throttle.get("reason", "") or status.get("throttle_reason", ""),
-            current_leverage=0.0,
-            margin_usage=0.0,
+            current_leverage=leverage,
+            margin_usage=margin_usage,
             daily_pnl=status.get("daily_pnl", 0.0),
             max_leverage=status.get("max_leverage", config.MAX_LEVERAGE),
             max_margin_usage=status.get("max_margin_pct", config.MAX_MARGIN_USAGE),
@@ -82,6 +100,12 @@ def get_guardrails():
             "max_daily_loss": config.MAX_DAILY_LOSS,
             "cooldown_seconds": config.COOLDOWN_SECONDS,
             "execution_mode": config.EXECUTION_MODE,
+            "live_execution_enabled": config.LIVE_EXECUTION_ENABLED,
+            "supported_execution_venues": config.SUPPORTED_EXECUTION_VENUES,
+            "supported_execution_markets": config.SUPPORTED_EXECUTION_MARKETS,
+            "supported_order_types": config.SUPPORTED_ORDER_TYPES,
+            "max_order_notional": config.MAX_ORDER_NOTIONAL,
+            "max_order_slippage_bps": config.MAX_ORDER_SLIPPAGE_BPS,
             "ts": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as exc:
