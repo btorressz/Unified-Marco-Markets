@@ -13,8 +13,8 @@ class PriceValidator:
 
     def __init__(self, deviation_threshold_bps: float = 50.0, state_store: StateStore | None = None, event_bus: EventBus | None = None):
         self.deviation_threshold_bps = deviation_threshold_bps
-        self._status = "OK"
-        self._reason = ""
+        self._status = "UNKNOWN"
+        self._reason = "No cross-venue validation performed"
         self._deviations: dict[str, float] = {}
         self._store = state_store or StateStore()
         self._bus = event_bus or EventBus()
@@ -26,8 +26,27 @@ class PriceValidator:
         coingecko = prices.get("coingecko", 0.0)
 
         feed_ts = feed_timestamps or {}
+        valid_prices = {key: value for key, value in prices.items() if value > 0}
         deviations = {}
         warnings = []
+        now = datetime.now(timezone.utc)
+
+        if len(valid_prices) < 2:
+            reason = "No prices available" if not valid_prices else "Only one valid price source available; cross-venue integrity is unverified"
+            self._status = "UNKNOWN"
+            self._reason = reason
+            self._deviations = {}
+            return {
+                "status": "UNKNOWN",
+                "integrity_status": "UNKNOWN",
+                "reason": reason,
+                "deviations": {},
+                "deviation_bps": {},
+                "prices": {k: round(v, 4) for k, v in valid_prices.items()},
+                "feed_asof_ts": feed_ts,
+                "last_alert_ts": self._last_alert_ts,
+                "ts": now.isoformat(),
+            }
 
         if pyth > 0 and kraken > 0:
             dev = abs(pyth - kraken) / kraken * 10000.0
@@ -52,8 +71,6 @@ class PriceValidator:
         self._reason = "; ".join(warnings) if warnings else ""
         self._deviations = deviations
 
-        now = datetime.now(timezone.utc)
-
         if warnings:
             self._emit_dislocation_alert_throttled(warnings, deviations, now)
 
@@ -63,7 +80,7 @@ class PriceValidator:
             "reason": self._reason,
             "deviations": deviations,
             "deviation_bps": deviations,
-            "prices": {k: round(v, 4) for k, v in prices.items() if v > 0},
+            "prices": {k: round(v, 4) for k, v in valid_prices.items()},
             "feed_asof_ts": feed_ts,
             "last_alert_ts": self._last_alert_ts,
             "ts": now.isoformat(),
