@@ -49,18 +49,29 @@ class GDELTIngestor:
                 articles = data.get("articles", [])
                 if not articles:
                     logger.warning("GDELT returned no articles for query: %s", query_str[:80])
-                    if run_context: run_context.mark_success()
+                    if run_context:
+                        run_context.mark_success()
+                        run_context.metadata["records_processed"] = 0
                     return pd.DataFrame()
 
                 df = self._parse_articles(articles)
-                if run_context: run_context.mark_success(); run_context.record_received(len(df))
+                if run_context:
+                    run_context.mark_success()
+                    run_context.record_received(len(df))
+                    run_context.metadata["records_processed"] = len(df)
                 shock_score = self._compute_shock_score(df)
                 self._store_results(df, shock_score)
-                if run_context: run_context.record_persisted(len(df))
+                # GDELT stores one aggregate Redis snapshot (article_count +
+                # shock_score), not N durable article rows. Count the actual
+                # persisted artifact honestly and preserve N as processed
+                # metadata above.
+                if run_context:
+                    run_context.record_persisted(1)
                 self._check_shock_spike(shock_score)
                 return df
         except Exception as exc:
-            if run_context: run_context.mark_failure(exc)
+            if run_context:
+                run_context.mark_failure(exc)
             logger.warning("GDELT API failed, returning empty DataFrame", exc_info=True)
             return pd.DataFrame()
 
