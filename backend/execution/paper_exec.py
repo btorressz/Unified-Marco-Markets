@@ -5,17 +5,17 @@ from datetime import datetime, timezone
 from backend.core.event_bus import EventBus, EventType
 from backend.core.models import PositionState
 from backend.core.position_ledger import PositionLedger
+from backend.compute.risk_engine import RiskEngine
 
 logger = logging.getLogger(__name__)
 
 
 class PaperExecutor:
 
-    def __init__(self, event_bus: EventBus | None = None):
+    def __init__(self, event_bus: EventBus | None = None, risk_engine: RiskEngine | None = None):
         self.event_bus = event_bus or EventBus()
+        self.risk_engine = risk_engine or RiskEngine()
         self._ledger = PositionLedger()
-        # Compatibility alias for existing code/tests that inspect the in-memory
-        # position dictionary directly.
         self._positions = self._ledger._positions
         self._orders: dict[str, dict] = {}
         self.enabled = True
@@ -73,6 +73,10 @@ class PaperExecutor:
             funding=funding,
             slippage=slippage,
         )
+
+        realized_for_fill = float(accounting.get("realized_pnl", 0.0) or 0.0)
+        if realized_for_fill != 0.0:
+            self.risk_engine.record_pnl(realized_for_fill)
 
         self._orders[order_id] = {
             "order_id": order_id,
