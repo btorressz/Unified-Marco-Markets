@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from backend.core.schemas import MarketDataResponse
 from backend.core.timeutils import window_to_seconds
+from backend.core.state_keys import PRICE_INTEGRITY, PRICE_INTEGRITY_LEGACY_LATEST, price_snapshot_candidates
 from backend.core.state_store import StateStore
 from backend.core.price_validator import PriceValidator
 from backend.data.repositories.market_repo import MarketRepository
@@ -63,26 +64,16 @@ def get_integrity():
     prices = {}
     feed_ts = {}
     for venue in ["pyth", "kraken", "coingecko"]:
-        snap = _store.get_snapshot(f"price:{venue}:SOL_USD")
-        if not snap:
-            snap = _store.get_snapshot(f"price:sol:{venue}")
+        snap = None
+        for key in price_snapshot_candidates(venue, "SOL/USD"):
+            snap = _store.get_snapshot(key)
+            if snap:
+                break
         if snap and snap.get("price"):
             prices[venue] = snap["price"]
             feed_ts[venue] = snap.get("ts", datetime.now(timezone.utc).isoformat())
 
-    if not prices:
-        return {
-            "status": "OK",
-            "integrity_status": "OK",
-            "reason": "No prices available yet",
-            "deviations": {},
-            "deviation_bps": {},
-            "feed_asof_ts": {},
-            "last_alert_ts": None,
-            "prices": {},
-            "ts": datetime.now(timezone.utc).isoformat(),
-        }
-
     result = _validator.validate(prices, feed_timestamps=feed_ts)
-    _store.set_snapshot("price:integrity", result, ttl=60)
+    _store.set_snapshot(PRICE_INTEGRITY, result, ttl=60)
+    _store.set_snapshot(PRICE_INTEGRITY_LEGACY_LATEST, result, ttl=60)
     return result
