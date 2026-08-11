@@ -13,6 +13,12 @@ from backend.ml.inference import invalidate_cache
 from backend.data.repositories.heuristic_repo import HeuristicRepository
 from backend.compute.heuristic_performance import aggregate_evaluations
 from backend.compute.rules_engine import RulesEngine
+from backend.core.state_keys import (
+    PREDICTION_LATEST,
+    PREDICTION_LATEST_LEGACY,
+    STABLECOIN_HEALTH,
+    STABLECOIN_HEALTH_LEGACY,
+)
 from backend.core.state_store import StateStore
 from backend.core.event_bus import EventBus, EventType
 
@@ -28,6 +34,15 @@ _PREDICTION_KEY = "desk:ml:prediction:latest"
 _PREDICTION_TTL = 120
 
 
+def _stable_assets(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(snapshot, dict):
+        return {}
+    assets = snapshot.get("assets")
+    if isinstance(assets, dict):
+        return assets
+    return {key: value for key, value in snapshot.items() if isinstance(value, dict) and "depeg_bps" in value}
+
+
 def _collect_state() -> dict[str, Any]:
     state: dict[str, Any] = {}
 
@@ -40,7 +55,7 @@ def _collect_state() -> dict[str, Any]:
     if shock:
         state["shock_score"] = shock.get("shock_score", 0.0)
 
-    pred = _store.get_snapshot("predict:latest")
+    pred = _store.get_snapshot(PREDICTION_LATEST) or _store.get_snapshot(PREDICTION_LATEST_LEGACY)
     if pred:
         state["predictor_confidence"] = pred.get("confidence", 0.5)
 
@@ -56,14 +71,13 @@ def _collect_state() -> dict[str, Any]:
     if vr:
         state["vol_regime"] = vr.get("regime", "normal")
 
-    stable = _store.get_snapshot("stablecoin:health:latest")
-    if stable:
-        assets = stable.get("assets", {})
-        if assets:
-            state["stable_health"] = sum(
-                1.0 - min(abs(a.get("depeg_bps", 0)) / 100.0, 1.0)
-                for a in assets.values()
-            ) / len(assets)
+    stable = _store.get_snapshot(STABLECOIN_HEALTH) or _store.get_snapshot(STABLECOIN_HEALTH_LEGACY)
+    assets = _stable_assets(stable)
+    if assets:
+        state["stable_health"] = sum(
+            1.0 - min(abs(a.get("depeg_bps", 0)) / 100.0, 1.0)
+            for a in assets.values()
+        ) / len(assets)
 
     sf = _store.get_snapshot("stable_flow:latest")
     if sf:
