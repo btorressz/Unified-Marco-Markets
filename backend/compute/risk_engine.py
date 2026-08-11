@@ -1,29 +1,48 @@
+import math
 import time
 from datetime import datetime, timezone
 
 from backend.core.schemas import PortfolioSnapshot
+from backend.core.risk_policy import RiskRuntimeState, configured_risk_policy
 
 
 class RiskEngine:
 
     def __init__(
         self,
-        max_leverage: float = 3.0,
-        max_margin_pct: float = 0.6,
-        max_daily_loss: float = 500.0,
-        cooldown_seconds: int = 300,
+        max_leverage: float | None = None,
+        max_margin_pct: float | None = None,
+        max_daily_loss: float | None = None,
+        cooldown_seconds: int | None = None,
+        runtime_state: RiskRuntimeState | None = None,
     ):
-        self.max_leverage = max_leverage
-        self.max_margin_pct = max_margin_pct
-        self.max_daily_loss = max_daily_loss
-        self.cooldown_seconds = cooldown_seconds
+        policy = configured_risk_policy()
+        self.max_leverage = float(policy.max_leverage if max_leverage is None else max_leverage)
+        self.max_margin_pct = float(policy.max_margin_usage if max_margin_pct is None else max_margin_pct)
+        self.max_daily_loss = float(policy.max_daily_loss if max_daily_loss is None else max_daily_loss)
+        self.cooldown_seconds = int(policy.cooldown_seconds if cooldown_seconds is None else cooldown_seconds)
 
+        self.runtime_state = runtime_state or RiskRuntimeState()
         self.throttle_active = False
         self.throttle_reason = ""
         self.last_action_ts: float = 0.0
         self.daily_pnl: float = 0.0
         self.daily_pnl_reset_date: str = ""
         self.last_metrics: dict = {}
+
+    def _sync_shared_state(self) -> None:
+        if not self.runtime_state.available():
+            return
+        throttle = self.runtime_state.throttle()
+        self.throttle_active = bool(throttle.get("active", False))
+        self.throttle_reason = str(throttle.get("reason", ""))
+        shared_pnl = self.runtime_state.daily_pnl()
+        if shared_pnl is not None:
+            self.daily_pnl = float(shared_pnl)
+            self.daily_pnl_reset_date = self.runtime_state.today()
+        shared_last_action = self.runtime_state.last_action_ts()
+        if shared_last_action is not None:
+            self.last_action_ts = float(shared_last_action)
 
     def _exposure_delta(self, positions: list[dict], proposed_action: dict) -> tuple[float, float]:
         """Return (reduce_quantity, increase_quantity) for the proposed order."""
@@ -65,12 +84,6 @@ class RiskEngine:
         account: dict | PortfolioSnapshot | None = None,
         open_orders: list[dict] | None = None,
     ) -> PortfolioSnapshot:
-        """Normalize account + exposure data into one risk snapshot.
-
-        Explicit account values win. Missing account funding fields fall back to
-        a compatibility-safe derived collateral value so legacy callers that
-        only pass positions continue to behave as before.
-        """
         if isinstance(account, PortfolioSnapshot):
             base = account.model_dump()
         else:
@@ -129,8 +142,6 @@ class RiskEngine:
         collateral = float(base.get("collateral", 0.0) or 0.0)
         realized_pnl = float(base.get("realized_pnl", 0.0) or 0.0)
 
-        # Preserve legacy behavior only when no real account funding information
-        # exists. Once cash/collateral is provided, the engine uses true equity.
         if cash == 0.0 and collateral == 0.0:
             collateral = max(margin_used, 1.0)
 
@@ -142,9 +153,7 @@ class RiskEngine:
             )
             or 0.0
         )
-        maintenance_margin = float(
-            base.get("maintenance_margin", margin_used * 0.5) or 0.0
-        )
+        maintenance_margin = float(base.get("maintenance_margin", margin_used * 0.5) or 0.0)
 
         return PortfolioSnapshot(
             cash=cash,
@@ -204,6 +213,21 @@ class RiskEngine:
             "open_order_exposure": snapshot.open_order_exposure,
         }
 
+    def _finite_action_reasons(self, proposed_action: dict) -> list[str]:
+        reasons: list[str] = []
+        for field in ("size", "price", "margin", "slippage_bps"):
+            value = proposed_action.get(field)
+            if value is None:
+                continue
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                reasons.append(f"invalid_{field}: must be numeric")
+                continue
+            if not math.isfinite(numeric):
+                reasons.append(f"invalid_{field}: must be finite")
+        return reasons
+
     def check_constraints(
         self,
         positions: list[dict],
@@ -211,7 +235,11 @@ class RiskEngine:
         execution_mode: str = "paper",
         portfolio_snapshot: dict | PortfolioSnapshot | None = None,
     ) -> tuple[bool, list[str]]:
-        reasons: list[str] = []
+        self._sync_shared_state()
+        reasons = self._finite_action_reasons(proposed_action)
+        if reasons:
+            self.last_metrics = {}
+            return False, reasons
 
         reduce_quantity, increase_quantity = self._exposure_delta(positions, proposed_action)
         is_pure_reduce = reduce_quantity > 0 and increase_quantity <= 1e-12
@@ -247,11 +275,7 @@ class RiskEngine:
                 increase_fraction = increase_quantity / full_order_size if full_order_size > 0 else 0.0
                 action_margin = float(requested_margin or 0) * increase_fraction
 
-            released_margin = (
-                reduced_notional / self.max_leverage
-                if self.max_leverage > 0
-                else 0.0
-            )
+            released_margin = reduced_notional / self.max_leverage if self.max_leverage > 0 else 0.0
             projected_margin = max(0.0, snapshot.margin_used - released_margin) + action_margin
             projected_margin_usage = projected_margin / equity if equity > 0 else float("inf")
             if projected_margin_usage > self.max_margin_pct:
@@ -283,25 +307,41 @@ class RiskEngine:
         allowed = len(reasons) == 0
         if allowed and not is_pure_reduce:
             self.last_action_ts = time.time()
+            if self.runtime_state.available():
+                self.runtime_state.set_last_action_ts(self.last_action_ts, self.cooldown_seconds)
 
         return allowed, reasons
 
     def activate_throttle(self, reason: str) -> None:
         self.throttle_active = True
         self.throttle_reason = reason
+        if self.runtime_state.available():
+            self.runtime_state.set_throttle(True, reason, expiry_seconds=max(300, self.cooldown_seconds))
 
     def deactivate_throttle(self) -> None:
         self.throttle_active = False
         self.throttle_reason = ""
+        if self.runtime_state.available():
+            self.runtime_state.set_throttle(False)
 
     def record_pnl(self, pnl: float) -> None:
+        value = float(pnl)
+        if not math.isfinite(value):
+            raise ValueError("PnL must be finite")
+        if self.runtime_state.available():
+            shared = self.runtime_state.record_realized_pnl(value)
+            if shared is not None:
+                self.daily_pnl = shared
+                self.daily_pnl_reset_date = self.runtime_state.today()
+                return
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if self.daily_pnl_reset_date != today:
             self.daily_pnl = 0.0
             self.daily_pnl_reset_date = today
-        self.daily_pnl += pnl
+        self.daily_pnl += value
 
     def get_status(self) -> dict:
+        self._sync_shared_state()
         return {
             "throttle_active": self.throttle_active,
             "throttle_reason": self.throttle_reason,
@@ -310,6 +350,7 @@ class RiskEngine:
             "max_daily_loss": self.max_daily_loss,
             "cooldown_seconds": self.cooldown_seconds,
             "daily_pnl": self.daily_pnl,
+            "runtime_state": "shared" if self.runtime_state.available() else "process_fallback",
             "portfolio_metrics": self.last_metrics,
             "ts": datetime.now(timezone.utc).isoformat(),
         }
