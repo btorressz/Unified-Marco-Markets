@@ -30,6 +30,7 @@ class WITSIngestor:
         reporter: str = "840",
         partner: str = "156",
         product: str = "TOTAL",
+        run_context=None,
     ) -> pd.DataFrame:
         url = f"{WITS_BASE_URL}/DF_WITS_Tariff/{reporter}.{partner}.{product}"
         try:
@@ -40,13 +41,19 @@ class WITSIngestor:
                 records = self._parse_response(data)
                 if not records:
                     logger.warning("WITS returned empty data for %s->%s [%s]", reporter, partner, product)
-                    return self._fallback_data()
+                    df = self._fallback_data()
+                    if run_context: run_context.record_received(len(df)); run_context.mark_fallback(fallback_type="sample", reason="provider_empty_response")
+                    return df
                 df = pd.DataFrame(records)
+                if run_context: run_context.mark_success(); run_context.record_received(len(df))
                 self._store_and_emit(df, reporter, partner, product)
+                if run_context: run_context.record_persisted(len(df))
                 return df
-        except Exception:
+        except Exception as exc:
             logger.warning("WITS API failed for %s->%s [%s], using cached/sample data", reporter, partner, product, exc_info=True)
-            return self._fallback_data()
+            df = self._fallback_data()
+            if run_context: run_context.record_received(len(df)); run_context.mark_failure(exc); run_context.mark_fallback(fallback_type="sample", reason="provider_request_failure")
+            return df
 
     def _parse_response(self, data: dict) -> list[dict]:
         records = []
@@ -86,12 +93,12 @@ class WITSIngestor:
             },
         )
 
-    async def fetch_all(self) -> list[pd.DataFrame]:
+    async def fetch_all(self, run_context=None) -> list[pd.DataFrame]:
         results = []
         for country in WITS_COUNTRIES:
             for product in WITS_PRODUCTS:
                 try:
-                    df = await self.fetch_tariff_data(reporter="840", partner=country, product=product)
+                    df = await self.fetch_tariff_data(reporter="840", partner=country, product=product, run_context=run_context)
                     results.append(df)
                 except Exception:
                     logger.warning("Failed to fetch WITS data for %s/%s", country, product, exc_info=True)

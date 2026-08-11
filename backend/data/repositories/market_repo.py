@@ -16,13 +16,18 @@ class MarketRepository:
         price: float,
         confidence: float = 1.0,
         ts: datetime | None = None,
+        ingest_run_id=None,
+        source_id: str | None = None,
+        provenance=None,
     ) -> dict | None:
         try:
-            return execute_returning(
+            row = execute_returning(
                 """INSERT INTO market_ticks (symbol, venue, price, confidence, ts)
                    VALUES (%s, %s, %s, %s, %s) RETURNING id, symbol, venue, price, confidence, ts""",
                 (symbol, venue, price, confidence, ts or datetime.now(timezone.utc)),
             )
+            self._record_provenance(row, "market_tick", ingest_run_id, source_id, provenance)
+            return row
         except Exception:
             logger.error("Failed to save market tick", exc_info=True)
             return None
@@ -33,16 +38,37 @@ class MarketRepository:
         market: str,
         funding_rate: float,
         ts: datetime | None = None,
+        ingest_run_id=None,
+        source_id: str | None = None,
+        provenance=None,
     ) -> dict | None:
         try:
-            return execute_returning(
+            row = execute_returning(
                 """INSERT INTO funding_ticks (venue, market, funding_rate, ts)
                    VALUES (%s, %s, %s, %s) RETURNING id, venue, market, funding_rate, ts""",
                 (venue, market, funding_rate, ts or datetime.now(timezone.utc)),
             )
+            self._record_provenance(row, "funding_tick", ingest_run_id, source_id, provenance)
+            return row
         except Exception:
             logger.error("Failed to save funding tick", exc_info=True)
             return None
+
+    @staticmethod
+    def _record_provenance(row, artifact_type, ingest_run_id, source_id, provenance):
+        if not row or not source_id or not (ingest_run_id or provenance):
+            return
+        try:
+            from backend.data.repositories.ingest_repo import IngestRepository
+            context = provenance
+            IngestRepository().record_provenance(
+                ingest_run_id or getattr(context, "run_id", None), source_id, artifact_type,
+                artifact_id=row.get("id"), provider_timestamp=getattr(context, "provider_timestamp", None),
+                received_at=getattr(context, "received_at", None), fallback_used=getattr(context, "fallback_used", False),
+                fallback_source_id=getattr(context, "fallback_source_id", None),
+            )
+        except Exception:
+            logger.warning("Failed to record %s provenance", artifact_type, exc_info=True)
 
     def get_latest_by_venue(self, venue: str) -> list[dict]:
         try:

@@ -1193,3 +1193,7 @@ details { margin-top:8px; } details summary { cursor:pointer;color:var(--text-se
 .sample-badge { display:inline-block; font-size:9px; padding:2px 5px; border:1px solid var(--border); border-radius:8px; }
 .heuristic-detail { margin-top:10px; padding:10px; border:1px solid var(--border); border-radius:6px; }
 .heuristic-detail summary { cursor:pointer; font-weight:600; }
+
+.source-status-badge,.fallback-badge,.failure-streak-badge{display:inline-block;padding:3px 7px;border-radius:10px;font-size:10px;font-weight:700;background:var(--bg-tertiary);color:var(--text-primary)}
+.source-status-badge.healthy{color:var(--accent-green)}.source-status-badge.failing{color:var(--accent-red)}.source-status-badge.fallback,.source-status-badge.degraded{color:var(--accent-yellow)}
+.provenance-filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}.provenance-filters input{background:var(--bg-secondary);border:1px solid var(--border-color);color:var(--text-primary);padding:8px;border-radius:4px}.provenance-detail pre{white-space:pre-wrap;max-width:420px}.ingest-run-table{margin-bottom:12px}

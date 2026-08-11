@@ -1592,6 +1592,13 @@ const UI = (() => {
   }
   function renderHeuristicPerformanceError(message) { const panel=document.getElementById('heuristic-performance-panel'); if(panel) panel.innerHTML=`<div class="research-warning error">${escapeHtml(message)}<br>No synthetic fallback was used.</div>`; }
 
+  const auditTable = (headers, rows) => `<div class="table-scroll"><table><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')||`<tr><td colspan="${headers.length}">No durable history available.</td></tr>`}</tbody></table></div>`;
+  const auditValue = value => value === null || value === undefined || value === '' ? 'N/A' : escapeHtml(String(value));
+  function renderIngestionRegistry(data) { const p=document.getElementById('ingestion-registry-panel'); if(!p)return; p.innerHTML=auditTable(['Source','Provider','Category','Cadence','Authoritative','Fallback Chain','Storage'],(data.sources||[]).map(s=>`<tr><td>${auditValue(s.source_id)}</td><td>${auditValue(s.provider)}</td><td>${auditValue(s.category)}</td><td>${auditValue(s.expected_cadence_seconds)}s</td><td>${s.authoritative?'Yes':'No'}</td><td>${auditValue((s.fallback_chain||[]).join(' → '))}</td><td>${auditValue(s.storage_target)}</td></tr>`)); }
+  function renderIngestionStatus(data) { const p=document.getElementById('ingestion-status-panel'); if(!p)return; p.innerHTML=auditTable(['Source','Status','Freshness','Last Attempt','Last Success','Latency','Success Rate','Failure Streak','Received','Persisted','Fallback'],(data.sources||[]).map(s=>{const badge=s.status==='success'?'HEALTHY':s.status==='fallback'?'FALLBACK':s.status==='failure'?'FAILING':s.status?'DEGRADED':'NO HISTORY';return `<tr><td>${auditValue(s.source_id)}<br><small>${auditValue(s.provider)}</small></td><td><span class="source-status-badge ${badge.toLowerCase().replace(' ','-')}">${badge}</span></td><td>${s.freshness_age_seconds==null?'N/A':auditValue(s.freshness_age_seconds)+'s'}</td><td>${auditValue(s.last_attempt)}</td><td>${auditValue(s.last_success)}</td><td>${s.last_duration_ms==null?'N/A':auditValue(Number(s.last_duration_ms).toFixed(0))+'ms'}</td><td>${s.recent_success_rate==null?'N/A':(Number(s.recent_success_rate)*100).toFixed(1)+'%'}</td><td><span class="failure-streak-badge">${auditValue(s.failure_streak)}</span></td><td>${auditValue(s.records_received)}</td><td>${auditValue(s.records_persisted)}</td><td>${s.fallback_used?`<span class="fallback-badge">${auditValue(s.fallback_source_id||'sample')}</span>`:'None'}</td></tr>`;})); }
+  function renderIngestionRuns(data) { const p=document.getElementById('ingestion-runs-panel');if(!p)return;p.innerHTML=auditTable(['Time','Source','Status','Duration','Received','Persisted','Fallback','Error'],(data.runs||[]).map(r=>`<tr><td>${auditValue(r.started_at)}</td><td>${auditValue(r.source_id)}</td><td>${auditValue(r.status)}</td><td>${r.duration_ms==null?'N/A':auditValue(Number(r.duration_ms).toFixed(0))+'ms'}</td><td>${auditValue(r.records_received)}</td><td>${auditValue(r.records_persisted)}</td><td>${r.fallback_used?auditValue(r.fallback_source_id||r.fallback_type):'None'}</td><td>${auditValue(r.error_message)}</td></tr>`)); }
+  function renderDataProvenance(data) { const p=document.getElementById('provenance-results');if(!p)return;p.innerHTML=auditTable(['Source / Run','Artifact','Provider / Received / Persisted','Fallback','Lineage'],(data.provenance||[]).map(r=>`<tr><td>${auditValue(r.source_id)}<br><small>${auditValue(r.ingest_run_id)}</small></td><td>${auditValue(r.artifact_type)} #${auditValue(r.artifact_id)}</td><td>${auditValue(r.provider_timestamp)}<br>${auditValue(r.received_at)}<br>${auditValue(r.persisted_at)}</td><td>${r.fallback_used?auditValue(r.fallback_source_id||'sample'):'None'}</td><td><details><summary>JSON lineage</summary><pre>${auditValue(JSON.stringify(r.lineage||{},null,2))}</pre></details></td></tr>`)); }
+
   return {
     formatTimestamp,
     formatNumber,
@@ -1630,6 +1637,10 @@ const UI = (() => {
     renderStrategyPerformance,
     renderHeuristicPerformance,
     renderHeuristicPerformanceError,
+    renderIngestionRegistry,
+    renderIngestionStatus,
+    renderIngestionRuns,
+    renderDataProvenance,
     renderExecutionEnhancements,
     renderReplaySimulation,
     renderAgentMemory,

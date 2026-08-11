@@ -25,6 +25,7 @@ class GDELTIngestor:
         self,
         keywords: list[str] | None = None,
         countries: list[str] | None = None,
+        run_context=None,
     ) -> pd.DataFrame:
         keywords = keywords or GDELT_KEYWORDS
         query_str = " OR ".join(f'"{kw}"' for kw in keywords)
@@ -48,14 +49,18 @@ class GDELTIngestor:
                 articles = data.get("articles", [])
                 if not articles:
                     logger.warning("GDELT returned no articles for query: %s", query_str[:80])
+                    if run_context: run_context.mark_success()
                     return pd.DataFrame()
 
                 df = self._parse_articles(articles)
+                if run_context: run_context.mark_success(); run_context.record_received(len(df))
                 shock_score = self._compute_shock_score(df)
                 self._store_results(df, shock_score)
+                if run_context: run_context.record_persisted(len(df))
                 self._check_shock_spike(shock_score)
                 return df
-        except Exception:
+        except Exception as exc:
+            if run_context: run_context.mark_failure(exc)
             logger.warning("GDELT API failed, returning empty DataFrame", exc_info=True)
             return pd.DataFrame()
 

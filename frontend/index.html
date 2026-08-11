@@ -534,8 +534,13 @@
           <div class="card" id="equity-tariff-panel"><div class="empty-state"><div class="empty-state-text">Loading tariff exposure...</div></div></div>
           <div class="card" id="equity-agent-panel"><div class="empty-state"><div class="empty-state-text">Loading equity agent signals...</div></div></div>
         </div>
-        <div class="section-title">Data Quality</div>
+        <div class="section-title">Data Quality &amp; Provenance</div>
         <div class="card" id="data-quality-panel"><div class="empty-state"><div class="empty-state-text">Loading data quality...</div></div></div>
+        <div class="section-title">Source Registry</div><div class="card" id="ingestion-registry-panel">Loading source registry...</div>
+        <div class="section-title">Ingestion Health</div><div class="card" id="ingestion-status-panel">Loading ingestion health...</div>
+        <div class="section-title">Recent Ingestion Runs</div><div class="card ingest-run-table" id="ingestion-runs-panel">Loading recent runs...</div>
+        <div class="section-title">Provenance Inspector</div>
+        <div class="card provenance-detail"><form id="provenance-form" class="provenance-filters"><input name="source_id" placeholder="Source ID"><input name="artifact_type" placeholder="Artifact type"><input name="artifact_id" placeholder="Artifact ID"><input name="ingest_run_id" placeholder="Run ID"><button type="submit" class="btn btn-primary">Inspect Provenance</button></form><div id="provenance-results">Use filters to inspect durable lineage.</div></div>
         <div class="grid-2" style="margin-top:16px">
           <div class="card" id="macro-sensitivity-panel"><div class="empty-state"><div class="empty-state-text">Loading tariff beta / macro sensitivity...</div></div></div>
           <div class="card" id="cross-asset-correlation-panel"><div class="empty-state"><div class="empty-state-text">Loading cross-asset correlations...</div></div></div>
