@@ -99,6 +99,7 @@ def create_app():
 
     from backend.api.geopolitical_routes import router as geopolitical_router
     from backend.api.protection_routes import router as protection_router
+    from backend.api.decision_routes import router as decision_router
 
 
     app.include_router(index_router)
@@ -146,6 +147,7 @@ def create_app():
     app.include_router(reports_router)
     app.include_router(geopolitical_router)
     app.include_router(protection_router)
+    app.include_router(decision_router)
 
     @app.get("/", response_class=HTMLResponse)
     def root():

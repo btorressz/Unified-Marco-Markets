@@ -21,6 +21,14 @@
   --shadow: 0 1px 3px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.3);
 }
 
+.audit-only-banner { border:1px solid var(--accent-yellow, #d6a700); padding:12px; margin:12px 0; color:var(--accent-yellow, #d6a700); }
+.decision-row { cursor:pointer; }
+.decision-row:hover { background:rgba(90,160,255,.08); }
+.decision-hash { overflow-wrap:anywhere; }
+.replay-verdict { font-size:20px; font-weight:700; padding:10px 0; }
+.replay-verdict.match { color:var(--accent-green); }
+.replay-verdict.mismatch { color:var(--accent-red); }
+
 [data-theme="light"] {
   --bg-primary: #f6f8fa;
   --bg-secondary: #ffffff;

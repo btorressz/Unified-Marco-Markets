@@ -353,6 +353,7 @@ const App = (() => {
         case 'geopolitics': await refreshGeopolitics(); break;
         case 'risk': await refreshRisk(); break;
         case 'agents': await refreshAgents(); break;
+        case 'decisions': await refreshDecisionAudit(); break;
       }
     } catch (err) {
       console.error(`[App] Error refreshing ${activeTab}:`, err);
@@ -717,6 +718,23 @@ const App = (() => {
     UI.renderAgentConsensusAndAttribution(consensus.status === 'fulfilled' ? consensus.value : null, attribution.status === 'fulfilled' ? attribution.value : null);
   }
 
+  async function refreshDecisionAudit() {
+    try { UI.renderDecisionList(await API.getDecisions({limit: 50})); }
+    catch (error) { UI.renderDecisionList({decisions: [], error: error.message}); }
+  }
+
+  async function showDecision(id) {
+    try { UI.renderDecisionDetail(await API.getDecision(id)); }
+    catch (error) { UI.renderDecisionDetail({error: error.message}); }
+  }
+
+  async function replayDecision(id) {
+    const panel=document.getElementById('decision-replay-result');
+    if(panel) panel.textContent='Reconstructing stored decision...';
+    try { UI.renderDecisionReplay(await API.postDecisionReplay(id)); }
+    catch (error) { UI.renderDecisionReplay({replay_status:'unavailable', reason:error.message}); }
+  }
+
   async function refreshHealth() {
     try {
       const health = await API.getHealth();
@@ -736,7 +754,7 @@ const App = (() => {
     } catch {}
   }
 
-  return { init, switchTab };
+  return { init, switchTab, showDecision, replayDecision, refreshDecisionAudit };
 })();
 
 document.addEventListener('DOMContentLoaded', App.init);
