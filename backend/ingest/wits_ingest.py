@@ -6,7 +6,7 @@ import pandas as pd
 
 from backend.config import WITS_COUNTRIES, WITS_PRODUCTS
 from backend.core.event_bus import EventBus, EventType
-from backend.core.state_keys import WITS_AGGREGATE
+from backend.core.state_keys import WITS_AGGREGATE, WITS_LATEST_LEGACY
 from backend.core.state_store import StateStore
 
 logger = logging.getLogger(__name__)
@@ -112,22 +112,20 @@ class WITSIngestor:
                 rates.extend(float(value) for value in numeric.tolist())
         tariff_pressure = round(sum(rates) / len(rates), 4) if rates else None
         fallback_used = bool(getattr(run_context, "fallback_used", False))
-        self.state_store.set_snapshot(
-            WITS_AGGREGATE,
-            {
-                "reporter": "840",
-                "countries": list(WITS_COUNTRIES),
-                "products": list(WITS_PRODUCTS),
-                "batch_count": len(results),
-                "records_returned": sum(len(df) for df in results),
-                "tariff_pressure": tariff_pressure,
-                "value": tariff_pressure,
-                "fallback_used": fallback_used,
-                "data_quality": "fallback" if fallback_used else "provider",
-                "ts": datetime.now(timezone.utc).isoformat(),
-            },
-            ttl=86400,
-        )
+        payload = {
+            "reporter": "840",
+            "countries": list(WITS_COUNTRIES),
+            "products": list(WITS_PRODUCTS),
+            "batch_count": len(results),
+            "records_returned": sum(len(df) for df in results),
+            "tariff_pressure": tariff_pressure,
+            "value": tariff_pressure,
+            "fallback_used": fallback_used,
+            "data_quality": "fallback" if fallback_used else "provider",
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+        self.state_store.set_snapshot(WITS_AGGREGATE, payload, ttl=86400)
+        self.state_store.set_snapshot(WITS_LATEST_LEGACY, payload, ttl=86400)
 
     async def fetch_all(self, run_context=None) -> list[pd.DataFrame]:
         results = []
