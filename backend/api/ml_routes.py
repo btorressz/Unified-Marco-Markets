@@ -186,10 +186,13 @@ def train_model_offline(body: dict[str, Any] | None = None):
 
 @router.get("/training/history")
 def get_training_history_route():
-    return {
-        "history": get_training_history(),
-        "ts": datetime.now(timezone.utc).isoformat(),
-    }
+    try:
+        return {"history": repository().list_runs(), "source": "postgres", "durable": True,
+                "ts": datetime.now(timezone.utc).isoformat()}
+    except Exception:
+        logger.warning("Durable training history unavailable", exc_info=True)
+        return {"history": get_training_history(), "source": "process_fallback", "durable": False,
+                "ts": datetime.now(timezone.utc).isoformat()}
 
 def _public(model):
     return {k: v for k, v in (model or {}).items() if k != "artifact_blob"}
@@ -231,10 +234,18 @@ def comparison():
     model=repository().active_model()
     if not model:return {"comparable":False,"reason":"No active governed ML model"}
     manifest=next((d.get("manifest",d) for d in repository().list_datasets() if str(d.get("id",d.get("dataset_id")))==str(model["dataset_id"])),{})
+    records=(model.get("validation_metrics") or {}).get("validation_records") or []
+    if not records:return {"comparable":False,"reason":"ML validation sample identities are unavailable"}
     try: rows=HeuristicRepository().performance_rows(primary_horizon="24h",venue=manifest.get("venue"),market=manifest.get("market"),start_ts=manifest.get("observation_start"),end_ts=manifest.get("observation_end"))
     except Exception:return {"comparable":False,"reason":"Compatible heuristic evaluations are unavailable"}
-    if not rows:return {"comparable":False,"reason":"No genuinely aligned 24h heuristic observations"}
-    rule=next((r for r in RulesEngine().rules if r["id"]==rows[0]["heuristic_id"]),None)
+    by_ts={str(r.get("timestamp")):r for r in records if r.get("timestamp") is not None}
+    aligned=[(row,by_ts[str(row.get("decision_ts"))]) for row in rows if str(row.get("decision_ts")) in by_ts]
+    if not aligned:return {"comparable":False,"reason":"No exact aligned evaluation samples","aligned_sample_count":0,"alignment":"exact_timestamp"}
+    rule=next((r for r in RulesEngine().rules if r["id"]==aligned[0][0]["heuristic_id"]),None)
     if not rule:return {"comparable":False,"reason":"Heuristic version is not registered"}
-    hm=aggregate_evaluations(rows,rule,"24h"); mm=model.get("validation_metrics") or {}
-    return {"comparable":True,"window":{"start":manifest.get("observation_start"),"end":manifest.get("observation_end"),"venue":manifest.get("venue"),"market":manifest.get("market"),"horizon":"24h"},"model":{"id":str(model["id"]),"version":model["model_version"],"sample_count":manifest.get("sample_count"),**{k:mm.get(k) for k in ("accuracy","precision","recall","f1","brier")}},"heuristic":{"id":rule["id"],"version":rule["version"],"sample_count":hm.get("evaluable_count"),"accuracy":hm.get("directional_accuracy"),"precision":hm.get("precision"),"recall":hm.get("recall"),"f1":hm.get("f1"),"brier":hm.get("brier_score")}}
+    hm=aggregate_evaluations([x[0] for x in aligned],rule,"24h")
+    truth=[int(x[1]["true_label"]) for x in aligned]; pred=[int(x[1]["predicted_class"]) for x in aligned]; probs=[float(x[1]["probability"]) for x in aligned]
+    tp=sum(p==1 and y==1 for p,y in zip(pred,truth)); fp=sum(p==1 and y==0 for p,y in zip(pred,truth)); fn=sum(p==0 and y==1 for p,y in zip(pred,truth))
+    mm={"accuracy":sum(p==y for p,y in zip(pred,truth))/len(truth),"precision":tp/(tp+fp) if tp+fp else None,"recall":tp/(tp+fn) if tp+fn else None,"brier":sum((p-y)**2 for p,y in zip(probs,truth))/len(truth)}
+    mm["f1"]=2*mm["precision"]*mm["recall"]/(mm["precision"]+mm["recall"]) if mm["precision"] is not None and mm["recall"] is not None and mm["precision"]+mm["recall"] else None
+    return {"comparable":True,"aligned_sample_count":len(aligned),"alignment":"exact_timestamp","window":{"start":manifest.get("observation_start"),"end":manifest.get("observation_end"),"venue":manifest.get("venue"),"market":manifest.get("market"),"horizon":"24h"},"model":{"id":str(model["id"]),"version":model["model_version"],"sample_count":len(aligned),**mm},"heuristic":{"id":rule["id"],"version":rule["version"],"sample_count":hm.get("evaluable_count"),"accuracy":hm.get("directional_accuracy"),"precision":hm.get("precision"),"recall":hm.get("recall"),"f1":hm.get("f1"),"brier":hm.get("brier_score")}}

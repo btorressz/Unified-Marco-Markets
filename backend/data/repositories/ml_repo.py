@@ -27,8 +27,25 @@ class MLRepository:
         rows=_db().execute_query("SELECT * FROM ml_models WHERE model_key='macro_direction' AND lifecycle_state='active' ORDER BY promoted_at DESC LIMIT 1"); return rows[0] if rows else None
     def transition(self, model_id, state, reason):
         if state == "active":
-            _db().execute_write("UPDATE ml_models SET lifecycle_state='archived',archived_at=NOW() WHERE model_key='macro_direction' AND lifecycle_state='active' AND id<>%s",(model_id,))
+            return self.activate_transactionally(model_id, reason)
         return _db().execute_returning("UPDATE ml_models SET lifecycle_state=%s,promotion_reason=%s,promoted_at=CASE WHEN %s='active' THEN NOW() ELSE promoted_at END,archived_at=CASE WHEN %s='archived' THEN NOW() ELSE archived_at END WHERE id=%s RETURNING *",(state,reason,state,state,model_id))
+    def activate_transactionally(self, model_id, reason, expected_state=None):
+        db = _db(); conn = db.get_connection(); old_autocommit = conn.autocommit
+        try:
+            conn.autocommit = False
+            with conn.cursor(cursor_factory=db.psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT * FROM ml_models WHERE id=%s FOR UPDATE", (model_id,)); row = cur.fetchone()
+                if not row: raise ValueError("Model not found")
+                target = dict(row)
+                if expected_state and target.get("lifecycle_state") != expected_state: raise ValueError(f"Model must be {expected_state}")
+                cur.execute("SELECT id FROM ml_models WHERE model_key=%s AND lifecycle_state='active' FOR UPDATE", (target["model_key"],)); cur.fetchall()
+                cur.execute("UPDATE ml_models SET lifecycle_state='archived',archived_at=NOW() WHERE model_key=%s AND lifecycle_state='active' AND id<>%s", (target["model_key"], model_id))
+                cur.execute("UPDATE ml_models SET lifecycle_state='active',promotion_reason=%s,promoted_at=NOW(),archived_at=NULL WHERE id=%s RETURNING *", (reason, model_id)); activated = cur.fetchone()
+            conn.commit(); return dict(activated) if activated else None
+        except Exception:
+            conn.rollback(); raise
+        finally:
+            conn.autocommit = old_autocommit; db.release_connection(conn)
     def list_datasets(self): return _db().execute_query("SELECT * FROM ml_datasets ORDER BY created_at DESC")
     def list_runs(self): return _db().execute_query("SELECT * FROM ml_training_runs ORDER BY created_at DESC")
     def save_prediction(self,row):

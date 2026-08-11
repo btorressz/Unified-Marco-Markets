@@ -36,11 +36,13 @@ def promote(model_id, reason):
     datasets=_repo.list_datasets(); dataset=next((d.get("manifest",d) for d in datasets if str(d.get("id",d.get("dataset_id")))==str(model["dataset_id"])),None)
     result=eligibility(model,dataset)
     if not result["promotion_eligible"]: raise ValueError("Model is not promotion eligible")
-    return _repo.transition(model["id"],"active",reason)
+    activate=getattr(_repo,"activate_transactionally",None)
+    return activate(model["id"],reason,expected_state="candidate") if activate else _repo.transition(model["id"],"active",reason)
 def rollback(model_id, reason):
     model=_repo.get_model(model_id)
     if not model or model.get("lifecycle_state")!="archived": raise ValueError("Rollback target must be archived")
-    return _repo.transition(model["id"],"active",reason)
+    activate=getattr(_repo,"activate_transactionally",None)
+    return activate(model["id"],reason,expected_state="archived") if activate else _repo.transition(model["id"],"active",reason)
 
 def model_health(model=None):
     model=model or _repo.active_model()

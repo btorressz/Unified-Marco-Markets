@@ -199,7 +199,6 @@ def _record_signals(signals: list[dict]) -> None:
     for s in signals:
         row = dict(s)
         row.setdefault("recorded_at", datetime.now(timezone.utc).isoformat())
-        row.setdefault("realized_outcome", 0.0)
         _signal_history.append(row)
     del _signal_history[:-500]
 
@@ -222,12 +221,13 @@ def agent_performance():
         by_agent.setdefault(s.get("agent", "unknown"), []).append(s)
     perf = []
     for agent, rows in by_agent.items():
-        outcomes = [float(r.get("realized_outcome", 0.0) or 0.0) for r in rows]
+        outcomes = [float(r["realized_outcome"]) for r in rows if r.get("realized_outcome") is not None]
         confs = [float(r.get("confidence", 0.0) or 0.0) for r in rows]
         hits = sum(1 for o in outcomes if o >= 0)
-        perf.append({"agent": agent, "signal_count": len(rows), "hit_rate": round(hits / len(rows), 4) if rows else 0.0, "average_confidence": round(sum(confs) / len(confs), 4) if confs else 0.0, "average_realized_outcome": round(sum(outcomes) / len(outcomes), 6) if outcomes else 0.0, "false_positive_count": sum(1 for o in outcomes if o < 0), "false_negative_count": 0, "best_market_regime": "normal_volatility", "worst_market_regime": "tariff_shock"})
-    best = max(perf, key=lambda x: x["hit_rate"], default=None)
-    worst = min(perf, key=lambda x: x["hit_rate"], default=None)
+        perf.append({"agent": agent, "signal_count": len(rows), "evaluated_count": len(outcomes), "unevaluated_count": len(rows)-len(outcomes), "hit_rate": round(hits / len(outcomes), 4) if outcomes else None, "average_confidence": round(sum(confs) / len(confs), 4) if confs else 0.0, "average_realized_outcome": round(sum(outcomes) / len(outcomes), 6) if outcomes else None, "false_positive_count": sum(1 for o in outcomes if o < 0), "false_negative_count": 0, "best_market_regime": None, "worst_market_regime": None})
+    evaluated = [row for row in perf if row["evaluated_count"]]
+    best = max(evaluated, key=lambda x: x["hit_rate"], default=None)
+    worst = min(evaluated, key=lambda x: x["hit_rate"], default=None)
     return {"agents": perf, "best_agent": best, "worst_agent": worst, "ts": datetime.now(timezone.utc).isoformat()}
 
 @router.get("/consensus")

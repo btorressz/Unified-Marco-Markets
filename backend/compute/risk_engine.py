@@ -234,6 +234,7 @@ class RiskEngine:
         proposed_action: dict,
         execution_mode: str = "paper",
         portfolio_snapshot: dict | PortfolioSnapshot | None = None,
+        as_of: datetime | None = None,
     ) -> tuple[bool, list[str]]:
         self._sync_shared_state()
         reasons = self._finite_action_reasons(proposed_action)
@@ -283,7 +284,8 @@ class RiskEngine:
                     f"Margin usage exceeded: projected {projected_margin_usage:.2%} > max {self.max_margin_pct:.2%}"
                 )
 
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        clock = as_of or datetime.now(timezone.utc)
+        today = clock.strftime("%Y-%m-%d")
         if self.daily_pnl_reset_date != today:
             self.daily_pnl = 0.0
             self.daily_pnl_reset_date = today
@@ -294,7 +296,7 @@ class RiskEngine:
             )
 
         if execution_mode == "live" and has_new_exposure:
-            elapsed = time.time() - self.last_action_ts
+            elapsed = clock.timestamp() - self.last_action_ts
             if self.last_action_ts > 0 and elapsed < self.cooldown_seconds:
                 remaining = self.cooldown_seconds - elapsed
                 reasons.append(f"Cooldown active: {remaining:.0f}s remaining")
@@ -306,7 +308,7 @@ class RiskEngine:
 
         allowed = len(reasons) == 0
         if allowed and not is_pure_reduce:
-            self.last_action_ts = time.time()
+            self.last_action_ts = clock.timestamp()
             if self.runtime_state.available():
                 self.runtime_state.set_last_action_ts(self.last_action_ts, self.cooldown_seconds)
 

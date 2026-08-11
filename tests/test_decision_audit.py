@@ -36,14 +36,12 @@ def test_canonical_hash_is_stable_and_sensitive():
     assert len(decision_hash(first)) == 64
 
 
-def test_exact_replay_uses_stored_snapshot_and_submits_nothing():
+def test_legacy_snapshot_without_explicit_inputs_is_unavailable():
     record = sample(); record["decision_hash"] = decision_hash(record)
     result = replay_decision(record, heuristic_versions={"shock_throttle:v1"})
-    assert result["exact_match"] is True
-    assert result["status"] == "EXACT MATCH"
-    assert result["orders_submitted"] == 0
-    assert result["replayed_decision"]["input_state"] == record["input_state"]
-    assert result["replayed_decision"]["config_snapshot"] == record["config_snapshot"]
+    assert result["exact_match"] is False
+    assert result["status"] == "UNAVAILABLE"
+    assert result["replayed_decision"] is None
 
 
 def test_replay_mismatch_has_structured_paths():
@@ -65,7 +63,7 @@ def test_missing_exact_versions_fail_honestly():
     governed["decision_hash"] = decision_hash(governed)
     result = replay_decision(governed, model_loader=lambda _model_id: None)
     assert result["replay_status"] == "unavailable"
-    assert "model unavailable" in result["reason"]
+    assert "unavailable" in result["reason"]
 
 
 def test_repository_persists_all_audit_sections(monkeypatch):

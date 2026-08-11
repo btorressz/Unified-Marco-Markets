@@ -52,7 +52,7 @@ class RulesEngine:
             },
         ]
 
-    def evaluate(self, context: dict) -> list[dict]:
+    def evaluate(self, context: dict, *, as_of=None) -> list[dict]:
         actions: list[dict] = []
         for rule in self.rules:
             if rule["condition"](context):
@@ -68,9 +68,18 @@ class RulesEngine:
                     "side": self._infer_side(rule["action_type"]),
                     "size": context.get("suggested_size", 0.0),
                     "reason": rule["explanation"],
-                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "ts": (as_of or datetime.now(timezone.utc)).isoformat(),
                 })
         return actions
+
+    def evaluate_version(self, heuristic_id: str, heuristic_version: int, context: dict, *, as_of=None) -> dict:
+        """Evaluate one registered rule version without falling forward to a newer rule."""
+        rule = next((r for r in self.rules if r["id"] == heuristic_id and int(r["version"]) == int(heuristic_version)), None)
+        if rule is None:
+            raise LookupError(f"heuristic unavailable: {heuristic_id}:v{heuristic_version}")
+        return {"heuristic_id": heuristic_id, "heuristic_version": int(heuristic_version),
+                "actions": [a for a in self.evaluate(context, as_of=as_of)
+                            if a["rule_id"] == heuristic_id and int(a["rule_version"]) == int(heuristic_version)]}
 
     def _tariff_vol_condition(self, ctx: dict) -> bool:
         roc = ctx.get("tariff_rate_of_change", 0.0)
