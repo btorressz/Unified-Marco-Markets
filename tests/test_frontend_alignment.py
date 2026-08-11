@@ -106,6 +106,18 @@ def test_guardrails_expose_existing_execution_safety_without_mutation():
     assert "LIVE_EXECUTION_ENABLED =" not in source
 
 
+def test_risk_status_uses_existing_position_and_risk_engine_math():
+    source = (ROOT / "backend" / "api" / "risk_routes.py").read_text(encoding="utf-8")
+
+    assert "PositionsRepository" in source
+    assert "build_portfolio_snapshot" in source
+    assert "calculate_metrics" in source
+    assert 'metrics.get("gross_leverage"' in source
+    assert 'metrics.get("margin_utilization"' in source
+    assert "current_leverage=0.0" not in source
+    assert "margin_usage=0.0" not in source
+
+
 def test_frontend_alignment_does_not_add_orchestration_infrastructure():
     assert not (ROOT / "docker-compose.yml").exists()
     assert not (ROOT / "docker-compose.yaml").exists()
