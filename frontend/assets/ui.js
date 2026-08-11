@@ -579,7 +579,7 @@ const UI = (() => {
     }
 
     const btResult = document.getElementById('backtest-result-panel');
-    if (btResult && !data.backtestResult) {
+    if (btResult && data.backtestResult === null) {
       renderBacktestPanel(null);
     }
     if (data.backtestResult) {
@@ -594,7 +594,7 @@ const UI = (() => {
         tbody.innerHTML = '';
         const live = data.positions.live_positions || [];
         const db = data.positions.db_positions || [];
-        const all = [...live, ...db];
+        const all = live.length ? live : db;
         if (all.length === 0) {
           tbody.innerHTML = '<tr><td colspan="6" class="empty-state-text" style="text-align:center;padding:20px">No positions</td></tr>';
         } else {
@@ -623,6 +623,10 @@ const UI = (() => {
         }
       }
     }
+
+    renderExecutionSafety(data.guardrails);
+    renderAccounting(data.positions);
+    if (data.events) renderLifecycle(data.events);
 
     if (data.eqi) {
       const panel = document.getElementById('eqi-panel');
@@ -765,6 +769,9 @@ const UI = (() => {
     if (data.portfolioRisk !== undefined) {
       renderPortfolioRiskPanel(data.portfolioRisk);
     }
+
+    renderPortfolioRiskBreakdown(data.portfolioContributions, data.portfolioExposures);
+    renderRedisHealth(data.redis);
 
     if (data.volRegime !== undefined || data.volRecommendations !== undefined) {
       renderVolRegimePanel(data.volRegime, data.volRecommendations);
@@ -947,6 +954,7 @@ const UI = (() => {
     if (!body) return;
     body.innerHTML = '';
     events.forEach(e => addEventToTimeline(e, false));
+    renderLifecycle(events);
   }
 
   function updateConnectionStatus(connected) {
@@ -1484,6 +1492,95 @@ const UI = (() => {
   }
 
 
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
+  }
+  const safeMoney = value => Number.isFinite(Number(value)) ? `${Number(value) < 0 ? '-' : ''}$${Math.abs(Number(value)).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '--';
+  const safeValue = value => value === null || value === undefined || value === '' ? '--' : escapeHtml(value);
+  const stat = (label, value) => `<div class="alignment-stat"><div class="alignment-label">${escapeHtml(label)}</div><div class="alignment-value">${value}</div></div>`;
+
+  function renderBacktestError(message) {
+    const panel = document.getElementById('backtest-result-panel');
+    if (panel) panel.innerHTML = `<div class="alignment-note alignment-danger"><strong>Backtest failed:</strong> ${escapeHtml(message)}</div>`;
+  }
+
+  function renderBacktestCoverage(data) {
+    const panel = document.getElementById('backtest-coverage-panel'); if (!panel) return;
+    if (!data) { panel.innerHTML = '<div class="empty-state-text">Historical coverage unavailable.</div>'; return; }
+    const coverage = data.coverage || data;
+    const names = ['market_ticks','funding_ticks','index_history','stablecoin_ticks','regime_snapshots','events','orders','fills'];
+    const rows = names.map(name => { const value = coverage[name] || {}; return `<tr><td>${escapeHtml(name)}</td><td>${Number(value.count || 0).toLocaleString()}</td><td>${safeValue(value.earliest)}</td><td>${safeValue(value.latest)}</td></tr>`; }).join('');
+    const total = names.reduce((sum, name) => sum + Number((coverage[name] || {}).count || 0), 0);
+    panel.innerHTML = `${total ? '' : '<div class="alignment-note">No persisted history available.</div>'}<div class="table-scroll"><table class="data-coverage-table"><thead><tr><th>Dataset</th><th>Count</th><th>Earliest</th><th>Latest</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+
+  function renderBacktestHistory(data, inspect) {
+    const panel = document.getElementById('backtest-history-panel'); if (!panel) return;
+    if (!data) { panel.innerHTML = '<div class="empty-state-text">Backtest history unavailable.</div>'; return; }
+    const rows = (data.history || data.runs || (Array.isArray(data) ? data : [])).slice(0, 15);
+    if (!rows.length) { panel.innerHTML = '<div class="empty-state-text">No durable backtest runs yet.</div>'; return; }
+    panel.innerHTML = `<div class="table-scroll"><table class="run-history-table"><thead><tr><th>Timestamp</th><th>Mode</th><th>Strategy</th><th>Venue</th><th>Market</th><th>Status</th><th>Return</th><th>Sharpe</th><th>Max Drawdown</th></tr></thead><tbody>${rows.map(r => { const m=r.metrics||r.result||r, c=r.config||{}; const id=r.id||r.run_id||''; return `<tr ${id?'class="run-history-row"':''} data-run-id="${escapeHtml(id)}"><td>${safeValue(r.created_at||r.ts||r.timestamp)}</td><td>${safeValue(r.mode||c.mode)}</td><td>${safeValue(r.strategy||c.strategy)}</td><td>${safeValue(r.venue||c.venue)}</td><td>${safeValue(r.market||c.market)}</td><td>${safeValue(r.status||'completed')}</td><td>${Number.isFinite(Number(m.total_return_pct))?formatNumber(m.total_return_pct,2)+'%':'--'}</td><td>${Number.isFinite(Number(m.sharpe_ratio??m.sharpe))?formatNumber(m.sharpe_ratio??m.sharpe,2):'--'}</td><td>${Number.isFinite(Number(m.max_drawdown_pct??m.max_drawdown))?formatNumber(m.max_drawdown_pct??m.max_drawdown,2)+'%':'--'}</td></tr>`; }).join('')}</tbody></table></div>`;
+    panel.querySelectorAll('[data-run-id]').forEach(row => row.addEventListener('click', () => row.dataset.runId && inspect(row.dataset.runId)));
+  }
+
+  function renderBacktestPanel(data) {
+    const panel=document.getElementById('backtest-result-panel'); if(!panel)return;
+    if(!data||data.available===false){panel.innerHTML='<div class="empty-state"><div class="empty-state-text">Run a backtest to see results</div></div>';return;}
+    const metrics=data.metrics?{...data.metrics,...data}:data, cfg=metrics.config||data.config||{}, historical=(metrics.mode||cfg.mode)==='historical';
+    const fields=[['Mode',historical?'Historical':'Synthetic'],['Total Return',Number.isFinite(Number(metrics.total_return_pct))?`${formatNumber(metrics.total_return_pct,2)}%`:'--'],['Final Capital',safeMoney(metrics.final_capital)],['Sharpe',safeValue(metrics.sharpe_ratio??metrics.sharpe)],['Max Drawdown',Number.isFinite(Number(metrics.max_drawdown_pct))?`${formatNumber(metrics.max_drawdown_pct,2)}%`:'--'],['Win Rate',Number.isFinite(Number(metrics.win_rate))?`${formatNumber(Number(metrics.win_rate)*100,1)}%`:'--'],['Trades',safeValue(metrics.trade_count)],['Fills',safeValue(metrics.fill_count)],['Average Slippage',Number.isFinite(Number(metrics.avg_slippage_bps))?`${formatNumber(metrics.avg_slippage_bps,2)} bps`:'--'],['VaR',safeValue(metrics.var_95)],['CVaR',safeValue(metrics.cvar_95)]];
+    if(historical) fields.push(['Run ID',safeValue(data.run_id||data.id||metrics.run_id)],['Persistence Status',safeValue(data.persistence_status||metrics.persistence_status)],['Fees Paid',safeMoney(metrics.fees_paid)],['Funding P&L',safeMoney(metrics.funding_pnl)],['Slippage Cost',safeMoney(metrics.slippage_cost)],['Realized P&L',safeMoney(metrics.realized_pnl)],['Unrealized P&L',safeMoney(metrics.unrealized_pnl)],['Venue',safeValue(cfg.venue||metrics.venue)],['Market',safeValue(cfg.market||metrics.market)],['Symbol',safeValue(cfg.symbol||metrics.symbol)],['Start',safeValue(cfg.start_ts||metrics.start_ts)],['End',safeValue(cfg.end_ts||metrics.end_ts)],['Latency',Number.isFinite(Number(cfg.latency_ms))?`${cfg.latency_ms} ms`:'--'],['Fill Model',safeValue(cfg.fill_model)]);
+    const guard=metrics.look_ahead_guard||{}, capital=metrics.capital_constraints||{}, warnings=metrics.warnings||[], manifest=metrics.data_manifest||{}, windows=metrics.walk_forward_windows||[];
+    const detail=(title,value)=>`<details><summary>${escapeHtml(title)}</summary><pre>${escapeHtml(JSON.stringify(value,null,2))}</pre></details>`;
+    panel.innerHTML=`<div class="research-warning"><span class="backtest-mode-badge ${historical?'historical-badge':''}">${historical?'HISTORICAL EVENT-TIME REPLAY':'SYNTHETIC RESEARCH'}</span></div><div class="alignment-grid">${fields.map(([l,v])=>stat(l,v)).join('')}</div>${historical?`<div class="alignment-note alignment-success"><strong>Look-ahead prevention:</strong> ${safeValue(guard.rule||guard.enabled||'enabled')}</div><div class="alignment-note"><strong>Capital constraints:</strong> ${safeValue(JSON.stringify(capital))}</div>`:''}${Object.keys(manifest).length?detail('Data Manifest',manifest):''}${windows.length?detail('Walk-Forward Windows',windows):''}${warnings.length?detail('Warnings / Assumptions',warnings):''}`;
+  }
+
+  function renderExecutionSafety(g) {
+    const panel=document.getElementById('execution-safety-panel'); if(!panel)return;
+    if(!g){panel.innerHTML='<div class="empty-state-text">Execution safety unavailable.</div>';return;}
+    const values=[['Mode',safeValue(g.execution_mode||'paper')],['Live Gate',g.live_execution_enabled?'ENABLED':'DISABLED'],['Max Notional',safeMoney(g.max_order_notional)],['Max Slippage',g.max_order_slippage_bps==null?'--':`${formatNumber(g.max_order_slippage_bps,0)} bps`],['Supported Venues',safeValue((g.supported_execution_venues||[]).join(' · '))],['Supported Markets',safeValue((g.supported_execution_markets||[]).join(' · '))],['Order Types',safeValue((g.supported_order_types||[]).join(' · '))]];
+    panel.innerHTML=`${!g.live_execution_enabled?'<div class="reconciliation-warning">LIVE GATE DISABLED</div>':''}<div class="execution-safety-grid">${values.map(([l,v])=>stat(l,v)).join('')}</div>`;
+  }
+
+  function renderLastOrderResult(result) {
+    const panel=document.getElementById('last-order-result-panel'); if(!panel)return;
+    const unknown=result&&(result.requires_reconciliation===true||result.status==='execution_state_unknown');
+    const fields=['status','execution_mode','venue','market','side','size','fill_price','order_id','durable_order_id','request_id','client_order_id','idempotency_status','persistence_status'];
+    panel.innerHTML=`${unknown?'<div class="reconciliation-warning">RECONCILIATION REQUIRED</div>':''}<div class="alignment-grid">${fields.map(k=>stat(k.replaceAll('_',' '),safeValue(result?.[k]))).join('')}</div>${result?.portfolio_metrics?`<details><summary>Portfolio Metrics</summary><pre>${escapeHtml(JSON.stringify(result.portfolio_metrics,null,2))}</pre></details>`:''}${result?.error?`<div class="alignment-note alignment-danger">${escapeHtml(result.error)}</div>`:''}`;
+  }
+
+  function renderAccounting(response) {
+    const panel=document.getElementById('execution-accounting-panel'); if(!panel)return;
+    if(!response){panel.innerHTML='<div class="empty-state-text">Position accounting unavailable.</div>';return;}
+    const live=response.live_positions||[], positions=live.length?live:(response.db_positions||[]);
+    const totals=positions.reduce((a,p)=>{a.r+=Number(p.realized_pnl||0);a.u+=Number(p.unrealized_pnl??p.pnl??0);a.f+=Number(p.fees||p.fees_paid||0);a.fu+=Number(p.funding||p.funding_pnl||0);a.s+=Number(p.slippage||p.slippage_cost||0);return a;},{r:0,u:0,f:0,fu:0,s:0});
+    panel.innerHTML=`<div class="accounting-grid">${[['Realized P&L',totals.r],['Unrealized P&L',totals.u],['Fees',totals.f],['Funding',totals.fu],['Slippage',totals.s]].map(([l,v])=>stat(l,safeMoney(v))).join('')}</div><div class="table-scroll"><table><thead><tr><th>Venue</th><th>Market</th><th>Side</th><th>Size</th><th>Entry</th><th>Mark</th><th>Realized</th><th>Unrealized</th><th>Fees</th><th>Funding</th><th>Slippage</th></tr></thead><tbody>${positions.map(p=>`<tr><td>${safeValue(p.venue)}</td><td>${safeValue(p.market||p.symbol)}</td><td>${safeValue(p.side||(Number(p.size)>=0?'long':'short'))}</td><td>${safeValue(p.size)}</td><td>${safeMoney(p.entry_price||p.price)}</td><td>${safeMoney(p.mark_price)}</td><td>${safeMoney(p.realized_pnl)}</td><td>${safeMoney(p.unrealized_pnl??p.pnl)}</td><td>${safeMoney(p.fees||p.fees_paid)}</td><td>${safeMoney(p.funding||p.funding_pnl)}</td><td>${safeMoney(p.slippage||p.slippage_cost)}</td></tr>`).join('')||'<tr><td colspan="11">No open positions.</td></tr>'}</tbody></table></div>`;
+  }
+
+  const lifecycleTypes=new Set(['ORDER_INTENT_CREATED','ORDER_RISK_APPROVED','ORDER_SUBMITTED','ORDER_ACKNOWLEDGED','ORDER_OPEN','ORDER_PARTIALLY_FILLED','ORDER_FILLED','ORDER_REJECTED','ORDER_SUBMISSION_UNKNOWN','ORDER_CANCEL_PENDING','ORDER_CANCELLED']);
+  function renderLifecycle(data) {
+    const panel=document.getElementById('execution-lifecycle-panel');if(!panel)return;const events=(Array.isArray(data)?data:(data?.events||[])).filter(e=>lifecycleTypes.has(String(e.event_type).toUpperCase())).slice(0,20);
+    panel.innerHTML=events.map(e=>{const type=String(e.event_type).toUpperCase(),p=e.payload||{},cls=type.includes('UNKNOWN')?'unknown':type.includes('REJECT')?'rejected':type.includes('FILLED')&&!type.includes('PARTIALLY')?'filled':type.includes('PARTIAL')||type.includes('OPEN')?'open':type.includes('CANCEL')?'cancelled':'progress';return `<div class="lifecycle-step ${cls}"><span>${safeValue(e.ts)}</span><strong>${escapeHtml(type)}</strong><span>${safeValue(e.source)}</span><span>${safeValue(p.message)}</span><small>Order ${safeValue(p.order_id||p.durable_order_id)} · Request ${safeValue(p.request_id)}</small></div>`;}).join('')||'<div class="empty-state-text">No order lifecycle events yet.</div>';
+  }
+
+  function renderPortfolioRiskPanel(data) {
+    const panel=document.getElementById('portfolio-risk-panel');if(!panel)return;
+    if(!data){panel.innerHTML='<div class="empty-state-text">Portfolio exposure analytics unavailable.</div>';return;}
+    const fields=[['Gross Exposure',safeMoney(data.total_exposure)],['Long Exposure',safeMoney(data.long_exposure)],['Short Exposure',safeMoney(data.short_exposure)],['Net Exposure',safeMoney(data.net_exposure)],['Stablecoin Allocation',safeValue(data.stablecoin_allocation)],['Total P&L',safeMoney(data.total_pnl)],['VaR 95%',safeMoney(data.var_95)],['CVaR 95%',safeMoney(data.cvar_95)],['Venue Concentration',safeValue(data.concentration_risk_venue)],['Asset Concentration',safeValue(data.concentration_risk_asset)],['Liquidity-adjusted Risk',safeValue(data.liquidity_adjusted_risk)],['Position Count',safeValue(data.position_count)]];
+    panel.innerHTML=`<div class="card-header"><span class="card-title">Portfolio Exposure Analytics</span></div><div class="alignment-grid">${fields.map(([l,v])=>stat(l,v)).join('')}</div>${(data.warnings||[]).map(w=>`<div class="alignment-note">${escapeHtml(w)}</div>`).join('')}`;
+  }
+
+  function renderRedisHealth(data) {
+    const panel=document.getElementById('redis-health-panel');if(!panel)return;
+    if(!data){panel.innerHTML='<div class="empty-state-text">Redis status unavailable.</div>';return;}
+    const fields=[['Redis',data.connected?'CONNECTED':data.degraded?'DEGRADED':'DISCONNECTED'],['Mode',data.fallback_mode?'FALLBACK':'NORMAL'],['Ping',data.ping_latency_ms==null?'--':`${formatNumber(data.ping_latency_ms,2)} ms`],['Pub/Sub',safeValue(data.pubsub_status)],['Namespace',safeValue(data.key_namespace??data.key_prefix)],['Sync Pool',`${safeValue(data.sync_pool_in_use)} / ${safeValue(data.max_connections)}`],['Sync Created',safeValue(data.sync_pool_created)],['Available',safeValue(data.sync_pool_available)],['Async Created / In Use',`${safeValue(data.async_pool_created)} / ${safeValue(data.async_pool_in_use)}`],['Reconnects',safeValue(data.reconnect_count)],['Connection Failures',safeValue(data.connection_failures)],['Publish Failures',safeValue(data.publish_failures)],['Memory',data.memory_used_mb==null?'--':`${formatNumber(data.memory_used_mb,2)} MB`],['Keys',safeValue(data.key_count_estimate)],['Last Successful Ping',safeValue(data.last_successful_ping)]];
+    panel.innerHTML=`<div class="telemetry-grid">${fields.map(([l,v])=>stat(l,v)).join('')}</div>${data.last_error?`<div class="alignment-note alignment-danger">${escapeHtml(data.last_error)}</div>`:''}`;
+  }
+
+  function renderPortfolioRiskBreakdown(contrib, exposures) {
+    const panel=document.getElementById('portfolio-risk-breakdown-panel');if(!panel)return;const byVenue=exposures?.by_venue||{},byAsset=exposures?.by_asset||{},rows=contrib?.contributions||[];
+    panel.innerHTML=`<div class="risk-breakdown-grid"><div>${stat('Venue Exposure',Object.entries(byVenue).map(([k,v])=>`${escapeHtml(k)} ${safeMoney(v)}`).join('<br>')||'--')}</div><div>${stat('Asset Exposure',Object.entries(byAsset).map(([k,v])=>`${escapeHtml(k)} ${safeMoney(v)}`).join('<br>')||'--')}</div></div><div class="table-scroll"><table><thead><tr><th>Market</th><th>Venue</th><th>Side</th><th>Notional</th><th>Risk Contribution</th><th>Risk Contribution %</th><th>Vol Estimate</th></tr></thead><tbody>${rows.map(c=>`<tr><td>${safeValue(c.market)}</td><td>${safeValue(c.venue)}</td><td>${safeValue(c.side)}</td><td>${safeMoney(c.notional)}</td><td>${safeValue(c.risk_contribution)}</td><td>${safeValue(c.risk_contribution_pct)}</td><td>${safeValue(c.vol_estimate)}</td></tr>`).join('')||'<tr><td colspan="7">No risk contributions available.</td></tr>'}</tbody></table></div>`;
+  }
+
   return {
     formatTimestamp,
     formatNumber,
@@ -1503,6 +1600,10 @@ const UI = (() => {
     renderAllocationPanel,
     renderMLPanel,
     renderBacktestPanel,
+    renderBacktestError,
+    renderBacktestCoverage,
+    renderBacktestHistory,
+    renderLastOrderResult,
     renderVolRegimePanel,
     renderPortfolioRiskPanel,
     renderRedisHealth,

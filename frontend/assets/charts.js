@@ -227,8 +227,6 @@ const Charts = (() => {
 
     const allCharts = [window._indexChart, window._fundingChart, window._divergenceChart, window._mcChart, window._equityChart, window._geoRiskChart].filter(Boolean);
 
-    const allCharts = [window._indexChart, window._fundingChart, window._divergenceChart, window._mcChart, window._equityChart].filter(Boolean);
-
     allCharts.forEach(chart => {
       if (chart.options.plugins.tooltip) {
         chart.options.plugins.tooltip.backgroundColor = c.tooltipBg;

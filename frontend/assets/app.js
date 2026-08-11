@@ -162,27 +162,21 @@ const App = (() => {
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const btn = form.querySelector('button[type="submit"]');
-      btn.disabled = true;
-      btn.textContent = 'Submitting...';
-
+      btn.disabled = true; btn.textContent = 'Submitting...';
+      const order = {
+        venue: form.venue.value, market: form.market.value, side: form.side.value,
+        size: Number(form.size.value), price: form.price.value ? Number(form.price.value) : null,
+        order_type: form.order_type.value, slippage_bps: Number(form.slippage_bps.value),
+      };
       try {
-        const order = {
-          venue: form.venue.value,
-          market: form.market.value,
-          side: form.side.value,
-          size: parseFloat(form.size.value),
-          price: form.price.value ? parseFloat(form.price.value) : null,
-        };
         const result = await API.postOrder(order);
-        UI.addEventToTimeline({ event_type: 'ORDER_SUBMITTED', source: 'user', ts: new Date().toISOString(), payload: { message: `${order.side} ${order.size} ${order.market} on ${order.venue}` } }, true);
-        form.reset();
+        UI.renderLastOrderResult(result);
+        UI.addEventToTimeline({ event_type: 'ORDER_SUBMITTED', source: 'user', ts: new Date().toISOString(), payload: { message: `${order.side} ${order.size} ${order.market} on ${order.venue}`, order_id: result.order_id, request_id: result.request_id } }, true);
         refreshActiveTab();
       } catch (err) {
-        UI.addEventToTimeline({ event_type: 'ERROR', source: 'user', ts: new Date().toISOString(), payload: { message: 'Order failed: ' + err.message } }, true);
-      } finally {
-        btn.disabled = false;
-        btn.textContent = 'Submit Order';
-      }
+        UI.renderLastOrderResult({ status: 'rejected', error: err.message });
+        UI.addEventToTimeline({ event_type: 'ORDER_REJECTED', source: 'user', ts: new Date().toISOString(), payload: { message: err.message } }, true);
+      } finally { btn.disabled = false; btn.textContent = 'Submit Order'; }
     });
   }
 
@@ -258,35 +252,70 @@ const App = (() => {
     });
   }
 
+  const HISTORICAL_SYMBOL_FALLBACK = { drift: 'SOL-PERP', pyth: 'SOL/USD', kraken: 'SOLUSD', coingecko: 'SOLANA/USD' };
+  let historicalSymbolDefaults = { ...HISTORICAL_SYMBOL_FALLBACK };
+
   function initBacktestForm() {
     const form = document.getElementById('backtest-form');
     if (!form) return;
+    const mode = form.elements.mode;
+    const syntheticVenues = Array.from(form.venue.options).map(o => ({ value: o.value, label: o.textContent }));
+    const historicalVenues = ['drift', 'pyth', 'kraken', 'coingecko'];
+    let advanced = false;
+    const setVenues = (historical) => {
+      const previous = form.venue.value;
+      const choices = historical ? historicalVenues.map(value => ({ value, label: value[0].toUpperCase() + value.slice(1) })) : syntheticVenues;
+      form.venue.innerHTML = choices.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
+      form.venue.value = choices.some(o => o.value === previous) ? previous : choices[0].value;
+    };
+    const suggestSymbol = () => { if (mode.value === 'historical' && historicalSymbolDefaults[form.venue.value]) form.symbol.value = historicalSymbolDefaults[form.venue.value]; };
+    const syncMode = () => {
+      const historical = mode.value === 'historical';
+      document.querySelectorAll('#backtest-form [data-historical-only]').forEach(el => { el.hidden = !historical || (el.hasAttribute('data-advanced-only') && !advanced); });
+      document.querySelectorAll('#backtest-form [data-synthetic-only]').forEach(el => { el.hidden = historical; });
+      form.querySelector('[data-historical-strategy]').disabled = !historical;
+      if (!historical && form.strategy.value === 'recorded_orders') form.strategy.value = 'momentum';
+      setVenues(historical); suggestSymbol();
+      document.getElementById('backtest-mode-banner').innerHTML = historical
+        ? '<span class="backtest-mode-badge historical-badge">HISTORICAL EVENT-TIME REPLAY</span> Persisted observations only. No synthetic fallback.'
+        : '<span class="backtest-mode-badge">SYNTHETIC RESEARCH SIMULATION</span> Uses the deterministic seeded research price path. This is not historical market replay.';
+    };
+    mode.addEventListener('change', syncMode);
+    form.venue.addEventListener('change', suggestSymbol);
+    document.getElementById('backtest-advanced-toggle').addEventListener('click', e => { advanced = !advanced; e.currentTarget.textContent = advanced ? 'Hide Advanced' : 'Advanced'; syncMode(); });
     form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const btn = form.querySelector('button[type="submit"]');
-      btn.disabled = true;
-      btn.textContent = 'Running...';
-      const panel = document.getElementById('backtest-result-panel');
-      if (panel) panel.innerHTML = '<div style="font-size:12px;color:var(--text-muted);padding:12px">Running backtest...</div>';
+      e.preventDefault(); const btn = form.querySelector('button[type="submit"]'); const panel = document.getElementById('backtest-result-panel');
+      const number = name => Number(form.elements[name].value);
+      const historical = mode.value === 'historical';
+      const config = { mode: historical ? 'historical' : 'synthetic', strategy: form.strategy.value, window_days: number('window_days'), initial_capital: number('initial_capital'), venue: form.venue.value, slippage_bps: number('slippage_bps') };
       try {
-        const config = {
-          strategy: form.strategy.value,
-          window_days: parseInt(form.window_days.value),
-          initial_capital: parseFloat(form.initial_capital.value),
-          venue: form.venue.value,
-          fee_bps: parseFloat(form.fee_bps.value),
-          slippage_bps: parseFloat(form.slippage_bps.value),
-        };
-        const result = await API.postBacktestRun(config);
-        UI.renderBacktestPanel(result);
-        UI.addEventToTimeline({ event_type: 'BACKTEST_COMPLETED', source: 'user', ts: new Date().toISOString(), payload: { message: `${config.strategy} ${config.window_days}d: ${result.total_return_pct >= 0 ? '+' : ''}${(result.total_return_pct || 0).toFixed(2)}%` } }, true);
-      } catch (err) {
-        if (panel) panel.innerHTML = `<div style="font-size:12px;color:var(--accent-red);padding:12px">Backtest failed: ${err.message}</div>`;
-        UI.addEventToTimeline({ event_type: 'ERROR', source: 'backtest', ts: new Date().toISOString(), payload: { message: 'Backtest failed: ' + err.message } }, true);
-      } finally {
-        btn.disabled = false;
-        btn.textContent = 'Run Backtest';
-      }
+        if (!(config.initial_capital > 0) || config.slippage_bps < 0) throw new Error('Capital must be positive and slippage cannot be negative.');
+        if (!historical) config.fee_bps = number('fee_bps');
+        else {
+          Object.assign(config, { market: form.market.value.trim(), symbol: form.symbol.value.trim(), latency_ms: number('latency_ms'), maker_fee_bps: number('maker_fee_bps'), taker_fee_bps: number('taker_fee_bps'), fill_model: form.fill_model.value, partial_fill_ratio: number('partial_fill_ratio'), allocation_limit: number('allocation_limit'), max_gross_leverage: number('max_gross_leverage'), decision_interval_seconds: number('decision_interval_seconds'), walk_forward: form.walk_forward.checked, train_window_days: number('train_window_days'), test_window_days: number('test_window_days'), step_days: number('step_days'), close_at_end: form.close_at_end.checked });
+          if (form.start_ts.value) config.start_ts = new Date(form.start_ts.value).toISOString();
+          if (form.end_ts.value) config.end_ts = new Date(form.end_ts.value).toISOString();
+          if (config.start_ts && config.end_ts && new Date(config.start_ts) >= new Date(config.end_ts)) throw new Error('Start date/time must be before end date/time.');
+          if (config.latency_ms < 0 || config.maker_fee_bps < 0 || config.taker_fee_bps < 0) throw new Error('Latency and fees cannot be negative.');
+          if (!(config.partial_fill_ratio > 0 && config.partial_fill_ratio <= 1)) throw new Error('Partial fill ratio must be greater than 0 and at most 1.');
+          if (!(config.allocation_limit > 0 && config.allocation_limit <= 1) || !(config.max_gross_leverage > 0)) throw new Error('Allocation limit must be in (0, 1] and max leverage must be positive.');
+        }
+        btn.disabled = true; btn.textContent = 'Running...'; panel.innerHTML = '<div class="empty-state-text">Running backtest...</div>';
+        const result = await API.postBacktestRun(config); UI.renderBacktestPanel(result); await refreshBacktestSupport();
+      } catch (err) { UI.renderBacktestError(err.message); }
+      finally { btn.disabled = false; btn.textContent = 'Run Backtest'; }
+    });
+    syncMode(); refreshBacktestSupport();
+  }
+
+  async function refreshBacktestSupport() {
+    const [coverage, history] = await Promise.allSettled([API.getBacktestDataCoverage(), API.getBacktestHistory()]);
+    if (coverage.status === 'fulfilled') {
+      historicalSymbolDefaults = { ...HISTORICAL_SYMBOL_FALLBACK, ...(coverage.value.historical_symbol_defaults || {}) };
+      UI.renderBacktestCoverage(coverage.value);
+    } else UI.renderBacktestCoverage(null);
+    UI.renderBacktestHistory(history.status === 'fulfilled' ? history.value : null, async runId => {
+      try { UI.renderBacktestPanel(await API.getBacktestRun(runId)); } catch (err) { UI.renderBacktestError(err.message); }
     });
   }
 
@@ -401,7 +430,7 @@ const App = (() => {
   }
 
   async function refreshStrategy() {
-    const [evaluation, status, adaptiveWeights, portfolio, allocation, mlPrediction, strategyPerformance] = await Promise.allSettled([
+    const [evaluation, status, adaptiveWeights, portfolio, allocation, mlPrediction, strategyPerformance, backtestResult] = await Promise.allSettled([
       API.getRulesEvaluation(),
       API.getRulesStatus(),
       API.getAdaptiveWeights(),
@@ -409,6 +438,7 @@ const App = (() => {
       API.getAllocationLatest(),
       API.getMLPredictionLatest(),
       API.getStrategyPerformance(),
+      API.getBacktestLatest(),
     ]);
     UI.renderStrategyTab({
       evaluation: evaluation.status === 'fulfilled' ? evaluation.value : null,
@@ -417,12 +447,13 @@ const App = (() => {
       portfolio: portfolio.status === 'fulfilled' ? portfolio.value : null,
       allocation: allocation.status === 'fulfilled' ? allocation.value : null,
       mlPrediction: mlPrediction.status === 'fulfilled' ? mlPrediction.value : null,
+      backtestResult: backtestResult.status === 'fulfilled' ? backtestResult.value : undefined,
     });
     if (strategyPerformance.status === 'fulfilled') UI.renderStrategyPerformance(strategyPerformance.value);
   }
 
   async function refreshExecution() {
-    const [positions, trades, eqi, integrity, health, indexData, preview, conditional, smart] = await Promise.allSettled([
+    const [positions, trades, eqi, integrity, health, indexData, preview, conditional, smart, guardrails, events] = await Promise.allSettled([
       API.getPositions(),
       API.getPaperTrades(),
       API.getEQI(),
@@ -432,6 +463,8 @@ const App = (() => {
       API.postAllocationExecutionPreview({ venue: 'paper', market: 'SOL-PERP', side: 'buy', size: 1, price: 150 }),
       API.getConditionalOrders(),
       API.getSmartOrders(),
+      API.getGuardrails(),
+      API.getEvents(100),
     ]);
     UI.renderDecisionDataPanel({
       integrity: integrity.status === 'fulfilled' ? integrity.value : null,
@@ -442,6 +475,8 @@ const App = (() => {
       positions: positions.status === 'fulfilled' ? positions.value : null,
       trades: trades.status === 'fulfilled' ? trades.value : null,
       eqi: eqi.status === 'fulfilled' ? eqi.value : null,
+      guardrails: guardrails.status === 'fulfilled' ? guardrails.value : null,
+      events: events.status === 'fulfilled' ? events.value : null,
     });
     UI.renderExecutionEnhancements({ preview: preview.status === 'fulfilled' ? preview.value : null, conditional: conditional.status === 'fulfilled' ? conditional.value : null, smart: smart.status === 'fulfilled' ? smart.value : null });
   }
@@ -592,25 +627,19 @@ const App = (() => {
   }
 
   async function refreshRisk() {
-    const [status, guardrails, heatmap, analogs, portfolioRisk, volRegime, volRecs, hedge, explain] = await Promise.allSettled([
-      API.getRiskStatus(),
-      API.getGuardrails(),
-      API.getLiquidationHeatmap(),
-      API.getRegimeAnalogs(),
-      API.getPortfolioRiskSummary(),
-      API.getVolRegime(),
-      API.getVolRecommendations(),
-      API.getCrossAssetHedge(),
-      API.getPortfolioExplanation(),
+    const [status, guardrails, heatmap, analogs, portfolioRisk, contributions, exposures, redis, volRegime, volRecs, hedge, explain] = await Promise.allSettled([
+      API.getRiskStatus(), API.getGuardrails(), API.getLiquidationHeatmap(), API.getRegimeAnalogs(),
+      API.getPortfolioRiskSummary(), API.getPortfolioRiskContributions(), API.getPortfolioRiskExposures(), API.getRedisHealth(),
+      API.getVolRegime(), API.getVolRecommendations(), API.getCrossAssetHedge(), API.getPortfolioExplanation(),
     ]);
     UI.renderRiskTab({
-      status: status.status === 'fulfilled' ? status.value : null,
-      guardrails: guardrails.status === 'fulfilled' ? guardrails.value : null,
-      heatmap: heatmap.status === 'fulfilled' ? heatmap.value : null,
-      analogs: analogs.status === 'fulfilled' ? analogs.value : null,
+      status: status.status === 'fulfilled' ? status.value : null, guardrails: guardrails.status === 'fulfilled' ? guardrails.value : null,
+      heatmap: heatmap.status === 'fulfilled' ? heatmap.value : null, analogs: analogs.status === 'fulfilled' ? analogs.value : null,
       portfolioRisk: portfolioRisk.status === 'fulfilled' ? portfolioRisk.value : null,
-      volRegime: volRegime.status === 'fulfilled' ? volRegime.value : null,
-      volRecommendations: volRecs.status === 'fulfilled' ? volRecs.value : null,
+      portfolioContributions: contributions.status === 'fulfilled' ? contributions.value : null,
+      portfolioExposures: exposures.status === 'fulfilled' ? exposures.value : null,
+      redis: redis.status === 'fulfilled' ? redis.value : null,
+      volRegime: volRegime.status === 'fulfilled' ? volRegime.value : null, volRecommendations: volRecs.status === 'fulfilled' ? volRecs.value : null,
     });
     UI.renderRiskIntelligence({ hedge: hedge.status === 'fulfilled' ? hedge.value : null, explain: explain.status === 'fulfilled' ? explain.value : null });
   }
