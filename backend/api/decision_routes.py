@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Query
 
+from backend.compute.counterfactual_replay import CounterfactualUnavailable, counterfactual_decision
 from backend.compute.decision_replay import decision_hash, replay_decision
 from backend.data.repositories.decision_repo import DecisionRepository
 
@@ -66,3 +67,13 @@ def replay_historical_decision(decision_id: UUID):
     # No state store, Redis, execution router, venue adapter, or order repository is
     # reachable from this endpoint. Only the immutable database row is supplied.
     return replay_decision(_get_or_404(decision_id))
+
+
+@router.post("/{decision_id}/counterfactual")
+def replay_counterfactual_decision(decision_id: UUID, body: dict[str, Any]):
+    """Research-only what-if replay over the immutable historical decision inputs."""
+    scenario = body.get("scenario") if isinstance(body, dict) else None
+    try:
+        return counterfactual_decision(_get_or_404(decision_id), scenario)
+    except CounterfactualUnavailable as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
