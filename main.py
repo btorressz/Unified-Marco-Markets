@@ -154,9 +154,13 @@ def create_app():
     @app.get("/", response_class=HTMLResponse)
     def root():
         html = (frontend_dir / "index.html").read_text(encoding="utf-8")
-        alignment_script = '<script src="/frontend/assets/frontend_alignment.js"></script>'
-        if alignment_script not in html:
-            html = html.replace("</body>", f"  {alignment_script}\n</body>")
+        scripts = (
+            '<script src="/frontend/assets/frontend_alignment.js"></script>',
+            '<script src="/frontend/assets/operator_access.js"></script>',
+        )
+        for script in scripts:
+            if script not in html:
+                html = html.replace("</body>", f"  {script}\n</body>")
         return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
     logger.info("Tariff Risk Desk API initialized with all routes")
