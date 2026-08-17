@@ -156,3 +156,25 @@ def check_connection() -> bool:
             release_connection(conn)
     except Exception:
         return False
+
+
+def check_required_tables(required_tables: tuple[str, ...] | list[str]) -> tuple[bool, list[str]]:
+    """Verify the small set of tables required by the live execution/audit path."""
+    required = [str(name) for name in required_tables]
+    if not required:
+        return True, []
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public' AND table_name = ANY(%s)",
+                (required,),
+            )
+            present = {row[0] for row in cur.fetchall()}
+    finally:
+        release_connection(conn)
+
+    missing = [name for name in required if name not in present]
+    return not missing, missing
