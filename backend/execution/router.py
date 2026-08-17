@@ -1,4 +1,5 @@
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -18,6 +19,8 @@ from backend.core.state_store import StateStore
 from backend.core.price_authority import PriceAuthority
 from backend.compute.risk_engine import RiskEngine
 from backend.compute.execution_decision import combine_execution_decision, evaluate_data_guardrails
+from backend.compute.decision_replay import decision_hash
+from backend.data.repositories.decision_repo import DecisionRepository
 from backend.agents.execution_agent import ExecutionAgent
 from backend.execution.paper_exec import PaperExecutor
 from backend.execution.hyperliquid_exec import HyperliquidExecutor
@@ -46,6 +49,7 @@ class ExecutionRouter:
         self._store = StateStore()
         self._price_authority = PriceAuthority(state_store=self._store)
         self._exec_agent = ExecutionAgent()
+        self._decision_repo = DecisionRepository()
 
         self.paper = PaperExecutor(event_bus=self.event_bus)
 
@@ -178,8 +182,6 @@ class ExecutionRouter:
         return self.risk_engine.build_portfolio_snapshot(positions, account=account)
 
     def _risk_replay_spec(self, positions: list[dict], portfolio_snapshot, proposed: dict) -> dict[str, Any]:
-        # Synchronize once so the recorded immutable snapshot is exactly the state
-        # the immediately-following check_constraints() call will evaluate.
         self.risk_engine._sync_shared_state()
         return {
             "positions": positions,
@@ -201,12 +203,68 @@ class ExecutionRouter:
             "execution_mode": self.mode,
         }
 
+    def _persist_final_decision(self, context: dict[str, Any], order_context: dict | None) -> str | None:
+        order_context = dict(order_context or {})
+        data_spec = context["replay_inputs"]["execution_boundary"]["data"]
+        order = dict(data_spec.get("order") or {})
+        final_id = str(uuid.uuid4())
+        audit = {
+            "id": final_id,
+            "decision_ts": context["decision_ts"],
+            "decision_type": "execution_pre_trade_final",
+            "venue": order.get("venue"),
+            "market": order.get("market"),
+            "symbol": order.get("market"),
+            "input_state": {"replay_inputs": context["replay_inputs"]},
+            "input_provenance": {
+                "provenance_status": "partial",
+                "source": "execution_router_pre_trade",
+                "admission_decision_id": order_context.get("decision_id"),
+            },
+            "derived_state": {
+                "data_result": context["data_result"],
+                "execution_agent_result": context["agent_result"],
+            },
+            "heuristic_result": {"status": "not_used"},
+            "ml_result": {"status": "not_used"},
+            "risk_result": context["risk_result"],
+            "allocation_result": {"status": "not_used"},
+            "execution_intent": {
+                **{k: v for k, v in order_context.items() if v is not None},
+                "admission_decision_id": order_context.get("decision_id"),
+                "order": order,
+                "execution_mode": self.mode,
+            },
+            "component_versions": {"execution_decision": "v1"},
+            "config_snapshot": {
+                "data_guardrails": {
+                    "max_order_notional": data_spec.get("max_order_notional"),
+                    "price_integrity_block_live": data_spec.get("price_integrity_block_live"),
+                },
+                "risk": (context["replay_inputs"].get("risk") or {}).get("limits", {}),
+            },
+            "final_decision": context["final_decision"],
+        }
+        audit["decision_hash"] = decision_hash(audit)
+        try:
+            self._decision_repo.create(audit)
+            self.event_bus.emit(
+                EventType.DECISION_RECORDED,
+                source="execution_router",
+                payload={"decision_id": final_id, "decision_type": "execution_pre_trade_final", "final_decision": context["final_decision"]},
+            )
+            return final_id
+        except Exception:
+            logger.warning("Final pre-trade decision audit persistence unavailable", exc_info=True)
+            return None
+
     def _emit_pre_trade_decision(
         self,
         decision_hook: Callable[[dict[str, Any]], None] | None,
         *,
         as_of: datetime,
         data_spec: dict[str, Any],
+        order_context: dict | None,
         risk_spec: dict[str, Any] | None = None,
         risk_result: dict[str, Any] | None = None,
         agent_spec: dict[str, Any] | None = None,
@@ -244,6 +302,24 @@ class ExecutionRouter:
             "agent_result": agent_result,
             "final_decision": final_decision,
         }
+        final_id = self._persist_final_decision(context, order_context)
+        context["final_decision_id"] = final_id
+
+        # Preserve PR #19's degraded-mode escape hatch for pure risk reductions.
+        # New live exposure, however, must not proceed without its final immutable
+        # decision audit record.
+        if self.mode == "live" and final_decision["allowed"] and final_id is None:
+            risk_reducing = False
+            if risk_spec and risk_spec.get("status") != "not_used":
+                try:
+                    risk_reducing = self.risk_engine._is_reducing(
+                        risk_spec.get("positions") or [], risk_spec.get("proposed_action") or {}
+                    )
+                except Exception:
+                    risk_reducing = False
+            if not risk_reducing:
+                raise RuntimeError("live_final_decision_audit_unavailable")
+
         if decision_hook is not None:
             decision_hook(context)
         return context
@@ -285,6 +361,15 @@ class ExecutionRouter:
                 f"invalid_slippage: {slippage_bps} bps exceeds allowed range 0-{MAX_ORDER_SLIPPAGE_BPS}"
             )
 
+        order_snapshot = {
+            "venue": venue,
+            "market": market,
+            "side": side,
+            "size": size,
+            "price": price,
+            "order_type": order_type,
+            "slippage_bps": slippage_bps,
+        }
         base_data_spec = {
             "execution_mode": self.mode,
             "live_execution_enabled": self.live_execution_enabled,
@@ -296,347 +381,150 @@ class ExecutionRouter:
             "price_fresh": True,
             "integrity_status": "UNKNOWN",
             "price_integrity_block_live": PRICE_INTEGRITY_BLOCK_LIVE,
+            "order": order_snapshot,
         }
 
         if validation_reasons:
-            ctx = self._emit_pre_trade_decision(decision_hook, as_of=now, data_spec=base_data_spec)
-            return {
-                "status": "blocked",
-                "reasons": validation_reasons,
-                "execution_mode": self.mode,
-                "final_decision": ctx["final_decision"],
-                **(order_context or {}),
-                "ts": now.isoformat(),
-            }
+            ctx = self._emit_pre_trade_decision(decision_hook, as_of=now, data_spec=base_data_spec, order_context=order_context)
+            return {"status": "blocked", "reasons": validation_reasons, "execution_mode": self.mode,
+                    "final_decision": ctx["final_decision"], "final_decision_id": ctx["final_decision_id"],
+                    **(order_context or {}), "ts": now.isoformat()}
 
         if self.mode == "live" and not self.live_execution_enabled:
-            ctx = self._emit_pre_trade_decision(decision_hook, as_of=now, data_spec=base_data_spec)
-            return {
-                "status": "blocked",
-                "reasons": [
-                    "Live execution is disabled. Set both EXECUTION_MODE=live and LIVE_EXECUTION_ENABLED=true only after venue adapters are production-ready."
-                ],
-                "execution_mode": "live",
-                "live_execution_enabled": False,
-                "final_decision": ctx["final_decision"],
-                **(order_context or {}),
-                "ts": now.isoformat(),
-            }
+            ctx = self._emit_pre_trade_decision(decision_hook, as_of=now, data_spec=base_data_spec, order_context=order_context)
+            return {"status": "blocked", "reasons": ["Live execution is disabled. Set both EXECUTION_MODE=live and LIVE_EXECUTION_ENABLED=true only after venue adapters are production-ready."],
+                    "execution_mode": "live", "live_execution_enabled": False,
+                    "final_decision": ctx["final_decision"], "final_decision_id": ctx["final_decision_id"],
+                    **(order_context or {}), "ts": now.isoformat()}
 
         live_price_info = self._get_live_price(market)
         fill_price = price if price is not None and price > 0 else live_price_info.get("price", 0.0)
-
         data_ctx = self._get_data_context(live_price_info, order_context=order_context)
         order_notional = abs(float(size) * float(fill_price))
-        data_spec = {
-            **base_data_spec,
-            "price_found": bool(live_price_info.get("found", False)),
-            "fill_price": float(fill_price),
-            "order_notional": order_notional,
-            "price_fresh": bool(live_price_info.get("fresh", True)),
-            "integrity_status": str(data_ctx.get("integrity_status", "UNKNOWN")),
-        }
+        data_spec = {**base_data_spec, "price_found": bool(live_price_info.get("found", False)),
+                     "fill_price": float(fill_price), "order_notional": order_notional,
+                     "price_fresh": bool(live_price_info.get("fresh", True)),
+                     "integrity_status": str(data_ctx.get("integrity_status", "UNKNOWN"))}
         data_result = evaluate_data_guardrails(data_spec)
 
         if not live_price_info.get("found") and fill_price <= 0:
-            self.event_bus.emit(
-                EventType.TRADE_BLOCKED_STALE_DATA,
-                source="execution_router",
-                payload={
-                    **data_ctx,
-                    "reason": "No price data available for " + market,
-                    "market": market,
-                    "side": side,
-                },
-            )
-            ctx = self._emit_pre_trade_decision(decision_hook, as_of=now, data_spec=data_spec, data_result=data_result)
-            return {
-                "status": "blocked",
-                "reasons": ["No price data available — try again when feeds are active"],
-                "final_decision": ctx["final_decision"],
-                **data_ctx,
-                "ts": now.isoformat(),
-            }
+            self.event_bus.emit(EventType.TRADE_BLOCKED_STALE_DATA, source="execution_router",
+                                payload={**data_ctx, "reason": "No price data available for " + market, "market": market, "side": side})
+            ctx = self._emit_pre_trade_decision(decision_hook, as_of=now, data_spec=data_spec, data_result=data_result, order_context=order_context)
+            return {"status": "blocked", "reasons": ["No price data available — try again when feeds are active"],
+                    "final_decision": ctx["final_decision"], "final_decision_id": ctx["final_decision_id"], **data_ctx, "ts": now.isoformat()}
 
         if order_notional > MAX_ORDER_NOTIONAL:
-            ctx = self._emit_pre_trade_decision(decision_hook, as_of=now, data_spec=data_spec, data_result=data_result)
-            return {
-                "status": "blocked",
-                "reasons": [
-                    f"max_notional_exceeded: {order_notional:.2f} > {MAX_ORDER_NOTIONAL:.2f}"
-                ],
-                "final_decision": ctx["final_decision"],
-                **data_ctx,
-                "ts": now.isoformat(),
-            }
+            ctx = self._emit_pre_trade_decision(decision_hook, as_of=now, data_spec=data_spec, data_result=data_result, order_context=order_context)
+            return {"status": "blocked", "reasons": [f"max_notional_exceeded: {order_notional:.2f} > {MAX_ORDER_NOTIONAL:.2f}"],
+                    "final_decision": ctx["final_decision"], "final_decision_id": ctx["final_decision_id"], **data_ctx, "ts": now.isoformat()}
 
         if not live_price_info.get("fresh", True) and live_price_info.get("found"):
             age_s = live_price_info.get("age_s", 0)
             if self.mode == "live":
-                self.event_bus.emit(
-                    EventType.TRADE_BLOCKED_STALE_DATA,
-                    source="execution_router",
-                    payload={
-                        **data_ctx,
-                        "reason": f"Price data stale ({age_s:.0f}s old, threshold {PRICE_FRESHNESS_THRESHOLD_S}s)",
-                        "market": market,
-                        "side": side,
-                        "age_s": age_s,
-                    },
-                )
-                ctx = self._emit_pre_trade_decision(decision_hook, as_of=now, data_spec=data_spec, data_result=data_result)
-                return {
-                    "status": "blocked",
-                    "reasons": [f"Price data stale ({age_s:.0f}s old) — refresh and try again"],
-                    "final_decision": ctx["final_decision"],
-                    **data_ctx,
-                    "ts": now.isoformat(),
-                }
-            else:
-                data_ctx["data_quality"] = "DEGRADED"
-                self.event_bus.emit(
-                    EventType.TRADE_DEGRADED_DATA,
-                    source="execution_router",
-                    payload={
-                        **data_ctx,
-                        "reason": f"Paper trade with stale data ({age_s:.0f}s old)",
-                        "market": market,
-                        "side": side,
-                    },
-                )
+                self.event_bus.emit(EventType.TRADE_BLOCKED_STALE_DATA, source="execution_router",
+                                    payload={**data_ctx, "reason": f"Price data stale ({age_s:.0f}s old, threshold {PRICE_FRESHNESS_THRESHOLD_S}s)", "market": market, "side": side, "age_s": age_s})
+                ctx = self._emit_pre_trade_decision(decision_hook, as_of=now, data_spec=data_spec, data_result=data_result, order_context=order_context)
+                return {"status": "blocked", "reasons": [f"Price data stale ({age_s:.0f}s old) — refresh and try again"],
+                        "final_decision": ctx["final_decision"], "final_decision_id": ctx["final_decision_id"], **data_ctx, "ts": now.isoformat()}
+            data_ctx["data_quality"] = "DEGRADED"
+            self.event_bus.emit(EventType.TRADE_DEGRADED_DATA, source="execution_router",
+                                payload={**data_ctx, "reason": f"Paper trade with stale data ({age_s:.0f}s old)", "market": market, "side": side})
 
         integrity_status = data_ctx.get("integrity_status", "OK")
         if integrity_status == "WARNING":
             if self.mode == "live" and PRICE_INTEGRITY_BLOCK_LIVE:
-                self.event_bus.emit(
-                    EventType.TRADE_BLOCKED_STALE_DATA,
-                    source="execution_router",
-                    payload={
-                        **data_ctx,
-                        "reason": "Price integrity WARNING — cross-venue deviation too high",
-                        "market": market,
-                        "side": side,
-                    },
-                )
-                ctx = self._emit_pre_trade_decision(decision_hook, as_of=now, data_spec=data_spec, data_result=data_result)
-                return {
-                    "status": "blocked",
-                    "reasons": ["Price integrity WARNING — cross-venue deviation too high"],
-                    "final_decision": ctx["final_decision"],
-                    **data_ctx,
-                    "ts": now.isoformat(),
-                }
-            else:
-                data_ctx["data_quality"] = data_ctx.get("data_quality", "DEGRADED")
-                self.event_bus.emit(
-                    EventType.TRADE_DEGRADED_DATA,
-                    source="execution_router",
-                    payload={
-                        **data_ctx,
-                        "reason": "Paper trade with integrity WARNING",
-                        "market": market,
-                        "side": side,
-                    },
-                )
+                self.event_bus.emit(EventType.TRADE_BLOCKED_STALE_DATA, source="execution_router",
+                                    payload={**data_ctx, "reason": "Price integrity WARNING — cross-venue deviation too high", "market": market, "side": side})
+                ctx = self._emit_pre_trade_decision(decision_hook, as_of=now, data_spec=data_spec, data_result=data_result, order_context=order_context)
+                return {"status": "blocked", "reasons": ["Price integrity WARNING — cross-venue deviation too high"],
+                        "final_decision": ctx["final_decision"], "final_decision_id": ctx["final_decision_id"], **data_ctx, "ts": now.isoformat()}
+            data_ctx["data_quality"] = data_ctx.get("data_quality", "DEGRADED")
+            self.event_bus.emit(EventType.TRADE_DEGRADED_DATA, source="execution_router",
+                                payload={**data_ctx, "reason": "Paper trade with integrity WARNING", "market": market, "side": side})
 
         if self.mode == "paper" and fill_price > 0:
             self.paper.mark_to_market(venue, market, fill_price)
 
         positions = self._get_risk_positions()
         portfolio_snapshot = self._get_risk_snapshot(positions)
-        proposed = {
-            "venue": venue,
-            "market": market,
-            "side": side,
-            "size": size,
-            "price": fill_price,
-            "order_type": order_type,
-            "slippage_bps": slippage_bps,
-        }
+        proposed = {"venue": venue, "market": market, "side": side, "size": size, "price": fill_price,
+                    "order_type": order_type, "slippage_bps": slippage_bps}
         risk_spec = self._risk_replay_spec(positions, portfolio_snapshot, proposed)
-
-        allowed, reasons = self.risk_engine.check_constraints(
-            positions,
-            proposed,
-            execution_mode=self.mode,
-            portfolio_snapshot=portfolio_snapshot,
-            as_of=now,
-        )
+        allowed, reasons = self.risk_engine.check_constraints(positions, proposed, execution_mode=self.mode,
+                                                               portfolio_snapshot=portfolio_snapshot, as_of=now)
         risk_result = {"approved": allowed, "reasons": reasons, "metrics": self.risk_engine.last_metrics}
         if not allowed:
-            self.event_bus.emit(
-                EventType.RISK_THROTTLE_ON,
-                source="execution_router",
-                payload={
-                    **data_ctx,
-                    "reasons": reasons,
-                    "proposed": proposed,
-                    "portfolio_metrics": self.risk_engine.last_metrics,
-                },
-            )
+            self.event_bus.emit(EventType.RISK_THROTTLE_ON, source="execution_router",
+                                payload={**data_ctx, "reasons": reasons, "proposed": proposed, "portfolio_metrics": self.risk_engine.last_metrics})
             logger.warning("Order blocked by risk engine: %s", reasons)
-            ctx = self._emit_pre_trade_decision(
-                decision_hook,
-                as_of=now,
-                data_spec=data_spec,
-                data_result=data_result,
-                risk_spec=risk_spec,
-                risk_result=risk_result,
-            )
-            return {
-                "status": "blocked",
-                "reasons": reasons,
-                "portfolio_metrics": self.risk_engine.last_metrics,
-                "final_decision": ctx["final_decision"],
-                **data_ctx,
-                "ts": now.isoformat(),
-            }
+            ctx = self._emit_pre_trade_decision(decision_hook, as_of=now, data_spec=data_spec, data_result=data_result,
+                                                order_context=order_context, risk_spec=risk_spec, risk_result=risk_result)
+            return {"status": "blocked", "reasons": reasons, "portfolio_metrics": self.risk_engine.last_metrics,
+                    "final_decision": ctx["final_decision"], "final_decision_id": ctx["final_decision_id"], **data_ctx, "ts": now.isoformat()}
 
         agent_spec: dict[str, Any] = {"status": "not_used"}
         agent_result: dict[str, Any] = {"status": "not_used", "allowed": True, "reasons": []}
         if self.mode == "live":
             market_state = self._get_market_state()
-            agent_spec = {
-                "proposed": proposed,
-                "market_state": market_state,
-                "max_slippage_bps": self._exec_agent.max_slippage_bps,
-                "min_liquidity_depth": self._exec_agent.min_liquidity_depth,
-            }
+            agent_spec = {"proposed": proposed, "market_state": market_state,
+                          "max_slippage_bps": self._exec_agent.max_slippage_bps,
+                          "min_liquidity_depth": self._exec_agent.min_liquidity_depth}
             check = self._exec_agent.pre_trade_check(proposed, market_state)
-            agent_result = dict(check)
-            agent_result["ts"] = now.isoformat()
+            agent_result = dict(check); agent_result["ts"] = now.isoformat()
             if not check.get("allowed", True):
-                self.event_bus.emit(
-                    EventType.AGENT_BLOCKED,
-                    source="execution_agent",
-                    payload={
-                        **data_ctx,
-                        "reasons": check.get("reasons", []),
-                        "proposed": proposed,
-                        "message": "Trade blocked by execution agent: " + "; ".join(check.get("reasons", [])),
-                    },
-                )
+                self.event_bus.emit(EventType.AGENT_BLOCKED, source="execution_agent",
+                                    payload={**data_ctx, "reasons": check.get("reasons", []), "proposed": proposed,
+                                             "message": "Trade blocked by execution agent: " + "; ".join(check.get("reasons", []))})
                 logger.warning("Order blocked by execution agent: %s", check.get("reasons"))
-                ctx = self._emit_pre_trade_decision(
-                    decision_hook,
-                    as_of=now,
-                    data_spec=data_spec,
-                    data_result=data_result,
-                    risk_spec=risk_spec,
-                    risk_result=risk_result,
-                    agent_spec=agent_spec,
-                    agent_result=agent_result,
-                )
-                return {
-                    "status": "agent_blocked",
-                    "reasons": check.get("reasons", []),
-                    "final_decision": ctx["final_decision"],
-                    **data_ctx,
-                    "ts": now.isoformat(),
-                }
+                ctx = self._emit_pre_trade_decision(decision_hook, as_of=now, data_spec=data_spec, data_result=data_result,
+                                                    order_context=order_context, risk_spec=risk_spec, risk_result=risk_result,
+                                                    agent_spec=agent_spec, agent_result=agent_result)
+                return {"status": "agent_blocked", "reasons": check.get("reasons", []),
+                        "final_decision": ctx["final_decision"], "final_decision_id": ctx["final_decision_id"], **data_ctx, "ts": now.isoformat()}
 
         executor = self._get_live_executor(venue) if self.mode == "live" else None
         executor_available = True if self.mode == "paper" else executor is not None
-        ctx = self._emit_pre_trade_decision(
-            decision_hook,
-            as_of=now,
-            data_spec=data_spec,
-            data_result=data_result,
-            risk_spec=risk_spec,
-            risk_result=risk_result,
-            agent_spec=agent_spec,
-            agent_result=agent_result,
-            executor_available=executor_available,
-        )
-
+        ctx = self._emit_pre_trade_decision(decision_hook, as_of=now, data_spec=data_spec, data_result=data_result,
+                                            order_context=order_context, risk_spec=risk_spec, risk_result=risk_result,
+                                            agent_spec=agent_spec, agent_result=agent_result,
+                                            executor_available=executor_available)
         if not ctx["final_decision"]["allowed"]:
             logger.error("Pre-trade decision blocked before submission: %s", ctx["final_decision"].get("reasons"))
-            return {
-                "status": "blocked",
-                "reasons": ctx["final_decision"].get("reasons", []),
-                "execution_mode": self.mode,
-                "final_decision": ctx["final_decision"],
-                **data_ctx,
-                "ts": now.isoformat(),
-            }
+            return {"status": "blocked", "reasons": ctx["final_decision"].get("reasons", []), "execution_mode": self.mode,
+                    "final_decision": ctx["final_decision"], "final_decision_id": ctx["final_decision_id"], **data_ctx, "ts": now.isoformat()}
 
-        # IMPORTANT: the final immutable audit callback above has completed before
-        # either paper placement or a live venue submission can occur.
         if self.mode == "paper":
-            result = self.paper.place_order(
-                venue=venue,
-                market=market,
-                side=side,
-                size=size,
-                order_type=order_type,
-                price=fill_price,
-                data_context=data_ctx,
-            )
-            result["execution_mode"] = "paper"
-            result["portfolio_metrics"] = self.risk_engine.last_metrics
-            result["final_decision"] = ctx["final_decision"]
+            result = self.paper.place_order(venue=venue, market=market, side=side, size=size, order_type=order_type,
+                                            price=fill_price, data_context=data_ctx)
+            result["execution_mode"] = "paper"; result["portfolio_metrics"] = self.risk_engine.last_metrics
+            result["final_decision"] = ctx["final_decision"]; result["final_decision_id"] = ctx["final_decision_id"]
             result.update({k: v for k, v in (order_context or {}).items() if v is not None})
             return result
 
         if executor is None:
-            # Defensive only: executor availability is already part of the final
-            # decision and should have returned blocked above.
             logger.error("No production-ready live executor available for venue=%s", venue)
-            return {
-                "status": "blocked",
-                "reasons": [f"No production-ready live executor available for venue '{venue}'"],
-                "execution_mode": "live",
-                "final_decision": ctx["final_decision"],
-                **data_ctx,
-                "ts": now.isoformat(),
-            }
+            return {"status": "blocked", "reasons": [f"No production-ready live executor available for venue '{venue}'"],
+                    "execution_mode": "live", "final_decision": ctx["final_decision"],
+                    "final_decision_id": ctx["final_decision_id"], **data_ctx, "ts": now.isoformat()}
 
         try:
-            result = executor.place_order(
-                market=market,
-                side=side,
-                size=size,
-                price=fill_price,
-                order_type=order_type,
-            )
+            result = executor.place_order(market=market, side=side, size=size, price=fill_price, order_type=order_type)
             if result.get("status") == "error":
-                return {
-                    "status": "execution_state_unknown",
-                    "requires_reconciliation": True,
-                    "reason": result.get("reason", "Live venue returned an execution error"),
-                    "venue": venue,
-                    "market": market,
-                    "side": side,
-                    "size": size,
-                    "final_decision": ctx["final_decision"],
-                    **data_ctx,
-                    "ts": now.isoformat(),
-                }
-            result["execution_mode"] = "live"
-            result["venue"] = venue
-            result["final_decision"] = ctx["final_decision"]
-            result.update(data_ctx)
-            return result
+                return {"status": "execution_state_unknown", "requires_reconciliation": True,
+                        "reason": result.get("reason", "Live venue returned an execution error"), "venue": venue,
+                        "market": market, "side": side, "size": size, "final_decision": ctx["final_decision"],
+                        "final_decision_id": ctx["final_decision_id"], **data_ctx, "ts": now.isoformat()}
+            result["execution_mode"] = "live"; result["venue"] = venue
+            result["final_decision"] = ctx["final_decision"]; result["final_decision_id"] = ctx["final_decision_id"]
+            result.update(data_ctx); return result
         except Exception as exc:
-            logger.error(
-                "Live execution state unknown for %s after submission attempt: %s",
-                venue,
-                exc,
-                exc_info=True,
-            )
-            return {
-                "status": "execution_state_unknown",
-                "requires_reconciliation": True,
-                "reason": "Live submission raised after execution may have reached the venue",
-                "venue": venue,
-                "market": market,
-                "side": side,
-                "size": size,
-                "error": str(exc),
-                "final_decision": ctx["final_decision"],
-                **data_ctx,
-                "ts": now.isoformat(),
-            }
+            logger.error("Live execution state unknown for %s after submission attempt: %s", venue, exc, exc_info=True)
+            return {"status": "execution_state_unknown", "requires_reconciliation": True,
+                    "reason": "Live submission raised after execution may have reached the venue", "venue": venue,
+                    "market": market, "side": side, "size": size, "error": str(exc),
+                    "final_decision": ctx["final_decision"], "final_decision_id": ctx["final_decision_id"],
+                    **data_ctx, "ts": now.isoformat()}
 
     def _get_live_executor(self, venue: str):
         if not self.live_execution_enabled:
@@ -650,28 +538,18 @@ class ExecutionRouter:
 
     def get_all_positions(self) -> list[dict]:
         positions = list(self.paper.get_positions())
-
         if self.mode == "live" and self.live_execution_enabled:
             if self.hyperliquid and self.hyperliquid.enabled:
-                try:
-                    positions.extend(self.hyperliquid.get_positions())
-                except Exception as exc:
-                    logger.error("Failed to get Hyperliquid positions: %s", exc)
-
+                try: positions.extend(self.hyperliquid.get_positions())
+                except Exception as exc: logger.error("Failed to get Hyperliquid positions: %s", exc)
             if self.drift and self.drift.enabled:
-                try:
-                    positions.extend(self.drift.get_positions())
-                except Exception as exc:
-                    logger.error("Failed to get Drift positions: %s", exc)
-
+                try: positions.extend(self.drift.get_positions())
+                except Exception as exc: logger.error("Failed to get Drift positions: %s", exc)
         return positions
 
     def get_status(self) -> dict:
-        return {
-            "execution_mode": self.mode,
-            "live_execution_enabled": self.live_execution_enabled,
-            "paper_enabled": self.paper.enabled,
-            "hyperliquid_enabled": self.hyperliquid.enabled if self.hyperliquid else False,
-            "drift_enabled": self.drift.enabled if self.drift else False,
-            "risk_status": self.risk_engine.get_status(),
-        }
+        return {"execution_mode": self.mode, "live_execution_enabled": self.live_execution_enabled,
+                "paper_enabled": self.paper.enabled,
+                "hyperliquid_enabled": self.hyperliquid.enabled if self.hyperliquid else False,
+                "drift_enabled": self.drift.enabled if self.drift else False,
+                "risk_status": self.risk_engine.get_status()}
