@@ -1,6 +1,10 @@
 # Tariff Risk Desk — Codebase Guide
 
-> **Current state:** 145 tests passing · 31 API routers · 31 compute modules · 7 agents · 7 ingest sources · Phase 6 complete
+> **Current state (August 2026):** post-PR #24 · paper/research default · durable execution lifecycle · shared Redis risk/runtime coordination · historical event-time replay · ingestion provenance · governed ML · immutable decision audit · exact replay · operator authorization · mode-aware production readiness · research-only counterfactual replay.
+
+This guide describes the current repository while preserving the major equity, institutional-intelligence, geopolitical, execution-safety, and research layers added earlier in the project.
+
+The repository has grown substantially beyond the older Phase-6/count snapshots. Exact file/test counts change as focused regression suites are added, so this guide describes authoritative modules and boundaries instead of freezing another stale count.
 
 ---
 
@@ -8,490 +12,739 @@
 
 | File | Purpose |
 |------|---------|
-| `main.py` | Entry point. Starts Redis (if available), creates the FastAPI app, mounts static files at `/frontend`, applies database migrations, launches the APScheduler with periodic ingest jobs, and runs Uvicorn on port 5000. Registers all 31 API routers. Serves `frontend/index.html` at root `/` with no-cache headers. |
-| `replit.md` | Project metadata and architecture notes kept in sync. Always loaded into agent memory. |
-| `codebase.md` | This file — detailed technical guide to every file in the codebase. |
-| `summary.md` | Plain-English description for non-technical readers. |
-| `changelog.md` | Feature changelog by phase. |
-| `explanation.md` | Extended architectural explanation. |
+| `main.py` | FastAPI entry point. Mounts `/frontend`, registers API/probe routers, applies PostgreSQL migrations through the existing DB helper, starts/stops APScheduler, installs the operator-auth HTTP boundary, injects additive frontend compatibility/security/replay scripts, and closes Redis/PostgreSQL resources during lifespan shutdown. |
+| `README.md` | **Primary current project overview and architecture/status document.** |
+| `Summary.md` | Plain-English product/system walkthrough. |
+| `codebase.md` | This file — technical repository guide. |
+| `changelog.md` | Chronological feature/hardening history, updated through PR #24. |
+| `Explanation.md` / `explanation.md` | Extended architectural explanation where present; use `README.md` as the primary current-state source. |
+| `pyproject.toml` | Python package/dependency definition. Current stack remains FastAPI + psycopg2 + Redis + scientific/ML libraries; no SQLAlchemy/asyncpg/Alembic migration. |
+
+Use `README.md` for the current repository architecture and project status.
 
 ---
 
-## Backend (`backend/`)
+# Backend (`backend/`)
 
-Organized into eight packages: `api`, `core`, `compute`, `agents`, `ml`, `ingest`, `execution`, and `data`.
+The backend remains organized into these broad packages:
 
-### `backend/config.py`
+- `api/` — HTTP/WebSocket surfaces
+- `core/` — shared runtime, safety, state, accounting, schemas
+- `compute/` — deterministic analytics/replay/risk/research logic
+- `agents/` — deterministic heuristic agents
+- `ml/` — governed ML feature/dataset/training/inference lifecycle
+- `ingest/` — provider collection, source registry and provenance
+- `execution/` — paper/prototype venue execution adapters and routing
+- `data/` — psycopg2 DB helper, migrations and repositories
 
-Centralized configuration from environment variables with safe defaults:
-- Execution mode (`EXECUTION_MODE`, default: `paper`)
-- Risk limits (`MAX_LEVERAGE=3.0`, `MAX_MARGIN_USAGE=0.6`, `MAX_DAILY_LOSS=500`)
-- Price freshness (`PRICE_FRESHNESS_THRESHOLD_S=30`)
-- Integrity enforcement (`PRICE_INTEGRITY_BLOCK_LIVE`, default: `false`)
-- WITS country list for tariff data
-- API keys for Hyperliquid, Solana/Drift/Jupiter (all optional — fail-open)
-- Adaptive weights toggle (`ADAPTIVE_WEIGHTS`, default: `1`)
-
-### `backend/logging_config.py`
-
-Structured JSON logging across the entire application. All entries include ISO-8601 timestamp, level, logger name, and message. APScheduler, urllib3, httpx, redis loggers silenced to WARNING. Trade logs (ORDER_SENT, ORDER_FILLED) remain at INFO.
+The current design deliberately keeps the PostgreSQL/Redis helper pattern rather than introducing a second persistence framework.
 
 ---
 
-### `backend/api/` — HTTP & WebSocket Routes
+## `backend/config.py` — Environment & Safety Configuration
 
-31 route files, all registered in `main.py`. Every router is self-contained with fail-open error handling.
+Centralized configuration includes:
 
-| File | Prefix | Endpoints | What it does |
-|------|--------|-----------|--------------|
-| `index_routes.py` | `/api/index` | `/latest`, `/history`, `/components`, `/alerts`, `/macro-terminal` | Tariff Pressure Index current value, history (window: 1h/4h/1d/7d), components breakdown, and the Macro Terminal returning WITS tariff series, rolling delta, country weights, and correlation heatmap. |
-| `markets_routes.py` | `/api/markets` | `/latest`, `/funding`, `/integrity` | Multi-venue SOL/BTC/ETH prices from Pyth, Kraken, CoinGecko, Hyperliquid, and Drift. Funding rates and cross-venue price integrity (deviations in bps). |
-| `divergence_routes.py` | `/api/divergence` | `/spreads`, `/alerts` | Cross-venue spread analysis — detects when the same asset trades at different prices across venues. Returns spread bps and dislocation alerts. |
-| `stablecoin_routes.py` | `/api/stablecoins` | `/health`, `/history`, `/alerts` | Stablecoin peg monitor for USDC, USDT, DAI. Health, stress, peg-break probability, depeg heatmap. |
-| `predict_routes.py` | `/api/predict` | `/latest` | 7-feature sigmoid macro prediction — probability of BTC up in 4h with confidence and driver explanations. |
-| `montecarlo_routes.py` | `/api/montecarlo` | `/run` | Monte Carlo VaR/CVaR simulation. Accepts symbol, position size, horizon (float hours), N paths (100–10,000). Returns VaR/CVaR at 95%, mean PnL, distribution histogram. |
-| `yield_routes.py` | `/api/yield` | `/carry` | Annualized carry scores from funding rates across venues. |
-| `microstructure_routes.py` | `/api/microstructure` | `/latest` | OB imbalance (buy/sell pressure), basis spread, bid-ask spread from Hyperliquid. |
-| `agents_routes.py` | `/api/agents` | `/signals`, `/registry` | Runs all 7 registered agents against current state. Returns structured signals with confidence, severity, direction, proposed action, reasoning, and data timestamp. |
-| `rules_routes.py` | `/api/rules` | `/evaluation`, `/status`, `/adaptive-weights` | Evaluates 5-rule strategy engine against current market state. Returns triggered actions. Adaptive weights endpoint returns dynamic weight adjustments. |
-| `execution_routes.py` | `/api/execution` | `/order`, `/positions`, `/trades`, `/pnl` | Order submission (through ExecutionRouter with risk checks), position listing (live + DB), paper trade history, PnL attribution. |
-| `risk_routes.py` | `/api/risk` | `/status`, `/guardrails`, `/stress`, `/regime-analogs` | Risk guardrail status, 4-scenario stress tests, and regime analog outcome distribution. |
-| `events_routes.py` | `/api/events` | `/` | Paginated event timeline from Postgres. Default limit 50, newest first. |
-| `health_routes.py` | `/api/health` | `/`, `/feeds`, `/redis` | System health (DB, Redis, scheduler, version). Feed status for all 7 data sources (Pyth, Kraken, CoinGecko, Hyperliquid, Drift, WITS, GDELT) with per-feed age, status, and authority flag. Redis health with ping latency, memory usage, key count, and fallback mode flag. |
-| `ws_routes.py` | `/ws/live` | WebSocket | Real-time event stream. Subscribes to Redis `desk:events` pub/sub, forwards events to all connected clients. Sends snapshot on connect. |
-| `metrics_routes.py` | `/api/metrics` | `/eqi` | Execution Quality Index — composite score (0–100), latency p50/p95, avg slippage bps, fill count, anomaly list. |
-| `solana_routes.py` | `/api/solana` | `/quality` | Solana execution quality score, congestion detection, slippage risk, route depth. |
-| `funding_arb_routes.py` | `/api/funding-arb` | `/latest` | HL vs Drift funding arb — spread bps, persistence, arb signal direction, expected net carry. |
-| `basis_routes.py` | `/api/basis` | `/latest` | Perpetual basis monitor — HL/Kraken, Drift/Pyth, HL/Drift spreads with annualized bps and feasibility. |
-| `stable_flow_routes.py` | `/api/stable-flow` | `/latest` | Stablecoin flow momentum and risk-on/off indicator. |
-| `portfolio_routes.py` | `/api/portfolio` | `/proposal` | Portfolio construction (risk_parity / mean_variance / kelly). Proposals only — never auto-trades. |
-| `liquidation_routes.py` | `/api/liquidation` | `/heatmap` | Leverage (1x–10x) vs price-drop (5%–50%) liquidation probability grid. |
-| `sandbox_routes.py` | `/api/sandbox` | `/run`, `/latest`, `/history` | Strategy A/B comparison — evaluates two rule configurations against the same market snapshot. |
-| `replay_routes.py` | `/api/replay` | `/run`, `/latest` | Event replay engine — deterministic backtesting through the historical event log. |
-| `slippage_routes.py` | `/api/slippage` | `/latest`, `/estimate` | Slippage curves and max safe order sizes across Hyperliquid, Jupiter, Drift. |
-| `hedge_routes.py` | `/api/hedge` | `/latest`, `/correlations` | Hedge ratio analysis — rolling correlation, OLS beta, effectiveness (R²), best pair, and recommended ratio. |
-| `allocation_routes.py` | `/api/allocation` | `/latest`, `/rebalance-preview` | **[Phase 6]** Risk-weighted capital allocation across 5 venues (Hyperliquid, Drift, Jupiter Spot, Stablecoins, Cash). Returns weights summing to 1.0, caps, floors, risk-adjusted expected returns, confidence, reasoning. Rebalance preview shows diff from current to proposed. |
-| `ml_routes.py` | `/api/ml` | `/features/latest`, `/prediction/latest`, `/train/offline`, `/training/history` | **[Phase 6]** ML feature store + inference. Latest 15-feature vector, heuristic-or-trained prediction (probability, confidence, model_type, top drivers), offline training endpoint (POST samples+labels), training run history. |
-| `backtest_routes.py` | `/api/backtest` | `/run`, `/latest`, `/history` | **[Phase 6]** Historical backtest. POST config (strategy, window_days, capital, venue, fee_bps, slippage_bps) → returns total return, Sharpe, max drawdown, win rate, trade count, avg slippage, VaR/CVaR, equity curve, per-strategy PnL. Deterministic (seeded RNG). Emits BACKTEST_STARTED/COMPLETED events. |
-| `volatility_routes.py` | `/api/volatility` | `/regime`, `/recommendations` | **[Phase 6]** Volatility regime classification (5 regimes) with per-regime scores and confidence. Recommendations: leverage adjustment, slippage tolerance, hedge aggressiveness, execution style, strategy weight shifts. |
-| `portfolio_risk_routes.py` | `/api/portfolio-risk` | `/summary`, `/contributions`, `/exposures` | **[Phase 6]** Real-time portfolio risk metrics from open positions. Total/long/short/net exposure, VaR/CVaR, max/current drawdown, concentration risk by venue and asset, per-venue exposure table, warnings list. Per-position risk contributions and exposure breakdown. |
+### Database / Redis
+- `DATABASE_URL`
+- `REDIS_URL`
+- `REDIS_KEY_PREFIX`
+- `REDIS_MAX_CONNECTIONS`
+- `REDIS_CONNECT_TIMEOUT_S`
+- `REDIS_SOCKET_TIMEOUT_S`
+- `REDIS_HEALTH_CHECK_INTERVAL_S`
+- `REDIS_LEASE_TTL_S`
+- `REDIS_PUBSUB_RETRY_S`
 
----
+### Execution
+- `EXECUTION_MODE` (`paper` default, or `live`)
+- `LIVE_EXECUTION_ENABLED` — second independent live gate, default `false`
+- `SUPPORTED_EXECUTION_VENUES`
+- `SUPPORTED_EXECUTION_MARKETS`
+- `SUPPORTED_ORDER_TYPES`
+- `MAX_ORDER_NOTIONAL`
+- `MAX_ORDER_SLIPPAGE_BPS`
 
-### `backend/core/` — Shared Infrastructure
+### Operator / Jupiter safety
+- `OPERATOR_API_TOKEN`
+- `OPERATOR_AUTH_REQUIRED`
+- `ENABLE_DIRECT_JUPITER_SWAP` — default `false`
 
-| File | What it does |
-|------|--------------|
-| `models.py` | Pydantic models for internal data: `PriceTick`, `FundingTick`, `DivergenceAlert`, and others. Type safety across all components. |
-| `schemas.py` | Pydantic response models for API responses: `IndexLatestResponse`, `RuleActionResponse`, `AlertResponse`, `StressTestResult`, `MonteCarloResult`, etc. |
-| `event_bus.py` | Unified event system with **85 defined event types**. Emits to Redis pub/sub (`desk:events`) for WebSocket broadcast and Postgres for persistence. All components write through one bus. Key event types grouped by domain: index/shock updates, trade lifecycle, risk/throttle, agent signals, ML/backtest/allocation, regime/vol, Redis health. |
-| `state_store.py` | Redis-backed snapshot store with in-memory fallback (fail-open). Components write keyed snapshots with configurable TTLs. Also provides throttle checking — prevents duplicate alerts. Key namespaces: `price:*`, `index:*`, `desk:*`, `regime:*`, `market:*`. |
-| `price_authority.py` | Pyth → Kraken → CoinGecko cascade. Returns best available price with source attribution. Fails gracefully. |
-| `price_validator.py` | Cross-venue price integrity checker. Computes pairwise deviations in bps. Flags WARNING at >50bps threshold. Emits throttled `PRICE_DISLOCATION_ALERT`. Returns OK/WARNING/CRITICAL. |
-| `normalization.py` | Normalizes raw data from Pyth, Kraken, CoinGecko, Hyperliquid, and Drift into consistent internal formats. |
-| `timeutils.py` | UTC helpers and window-string parsing (1h/4h/1d/7d → seconds). |
+Any live-capable configuration forces operator auth through `backend/core/operator_auth.py`, regardless of the explicit paper/research auth flag.
+
+### Risk / market data
+- `MAX_LEVERAGE`
+- `MAX_MARGIN_USAGE`
+- `MAX_DAILY_LOSS`
+- `COOLDOWN_SECONDS`
+- `PRICE_FRESHNESS_THRESHOLD_S`
+- `PRICE_INTEGRITY_BLOCK_LIVE`
+
+### Provider configuration
+- Pyth Hermes URL/API-key state
+- Hyperliquid/Drift/Solana/Jupiter settings
+- WITS countries/products
+- GDELT keywords
+
+`config.summary()` exposes safe configured/not-configured metadata without returning operator/Pyth/private-key secrets.
 
 ---
 
-### `backend/compute/` — Pure Computation Modules (31 modules)
+# `backend/core/` — Shared Runtime & Safety Infrastructure
 
-Stateless — take data in, return results. No I/O, no side effects.
+## `position_ledger.py`
 
-| File | What it computes |
-|------|-----------------|
-| `index_calc.py` | **Tariff Pressure Index** — weighted composite (0–100) from WITS tariff rates, trade values, and GDELT news shock. Country weights scale by trading-partner size. |
-| `shock_calc.py` | **GDELT Shock Score** — z-score of news tone + volume. Detects geopolitical shock spikes above historical norms. |
-| `divergence.py` | **Cross-venue spread detection** — spread in bps per venue pair, severity classification, dislocation alerts above threshold. |
-| `regime.py` | **Regime classification** — funding regime (positive/negative/neutral) and volatility regime (low/normal/high/extreme) from rate magnitude and price volatility. |
-| `regime_memory.py` | **Regime persistence + analog library** — stores regime state transitions; `get_outcome_distribution()` returns avg returns at 4h/24h/3d horizons, win rates, and best historical analog for current regime pattern. |
-| `carry_score.py` | **Annualized carry** — converts 8h periodic funding rates to annualized carry scores for cross-venue comparison. |
-| `rules_engine.py` | **5 configurable rules**: tariff shock hedge, divergence arb, funding flip, vol regime scale, stable rotation. Each returns proposed action with venue, market, side, size, reason. |
-| `risk_engine.py` | **Risk guardian** — enforces leverage (3x), margin (60%), daily loss ($500) limits. Detects position-reducing trades via `_is_reducing()` — reduces bypass all constraints. Cooldown only in live mode. |
-| `stress_tests.py` | **4 stress scenarios** — tariff escalation, liquidity crisis, flash crash, funding flip. Returns PnL impact, max drawdown, margin call flag, per-position breakdown. |
-| `stablecoin_health.py` | **Peg monitor** — depeg magnitude in bps, peg status classification, stress detection, peg-break probability from multi-signal composite. |
-| `macro_predictor.py` | **Sigmoid macro prediction** — 7-feature logistic model. Returns P(BTC up in 4h), confidence, driver explanations. |
-| `monte_carlo.py` | **Monte Carlo engine** — GBM paths (up to 10,000), VaR/CVaR at 95%, mean PnL, distribution histogram. Supports sub-hour horizons (float hours). |
-| `microstructure.py` | **Orderbook microstructure** — bid/ask imbalance, basis, effective spread, liquidity depth from Hyperliquid data. |
-| `stable_yield.py` | **Stablecoin yield** — lending rates, LP yields, funding carry across stablecoin pairs. |
-| `pnl_attribution.py` | **PnL decomposition** — market move, funding paid/received, fees, slippage. Per-position and aggregate. |
-| `execution_metrics.py` | **Execution Quality Index** — rolling window of last 100 fills. Latency p50/p95, avg slippage bps, anomaly detection via z-score (>2σ). Composite EQI score 0–100. |
-| `solana_liquidity.py` | **Solana execution quality** — 4-component score (spread, slippage, congestion, route complexity). Congestion via RPC latency + slot delta. Returns quality score (0–100), congestion flag, slippage risk level. |
-| `funding_arb.py` | **Funding arb detector** — HL vs Drift spread in bps, persistence tracking, rolling 100-entry mean. Signal: long_hl_short_drift / short_hl_long_drift / none. |
-| `basis_engine.py` | **Perp basis monitor** — HL/Kraken, Drift/Pyth, HL/Drift spreads. Annualized bps, net carry, execution feasibility (0–100). 200-entry rolling history. |
-| `stable_flow.py` | **Stablecoin flow momentum** — dominance proxy + depeg stress → momentum (−1 to +1), risk-on/off indicator, driver explanations. |
-| `adaptive_weights.py` | **Dynamic risk weights** — adjusts four predictor weights (macro, carry, microstructure, momentum) based on shock level, vol, and funding regime. Equal default (25% each). |
-| `portfolio_optimizer.py` | **Portfolio construction** — risk_parity, mean_variance, scaled Kelly across hl_perps/drift_perps/spot_jupiter/stablecoins. Hard caps + floors. Proposals only. |
-| `liquidation_heatmap.py` | **Liquidation heatmap** — 6×8 leverage/price-drop grid. Probability from margin distance, vol-adjusted factor, margin usage. Monotonicity enforced across both axes. |
-| `strategy_sandbox.py` | **Strategy A/B comparison** — evaluates two rule configs against the same market snapshot. Monte Carlo VaR per variant. Recommends best variant. |
-| `replay_engine.py` | **Event replay** — deterministic chronological replay of historical events through RulesEngine. Returns action log, final portfolio value, max drawdown. |
-| `slippage_model.py` | **Slippage curves** — order-size vs bps curves for size buckets ($100–$100k). Max safe sizes at 10/25/50bps thresholds. Multi-venue (HL/Jupiter/Drift). |
-| `hedge_ratio.py` | **Hedge ratio calculator** — Pearson correlation, OLS beta, hedge ratio, effectiveness (R²) over configurable observation window. Best pair, recommended ratio, macro-correlation overlay. |
-| `stablecoin_playbook.py` | **Depeg playbook** — 5-tier action ladder (monitor → reduce → diversify → hedge → emergency_exit) based on depeg magnitude and peg-break probability. |
-| `capital_allocator.py` | **[Phase 6] Capital allocation engine** — risk-weighted allocation across 5 venues: Hyperliquid, Drift, Jupiter Spot, Stablecoins, Cash. Reads live state (tariff shock, vol regime, stable health, funding arb, basis, exec quality). Applies caps (40%/30%/30%/70%/100%) and floors (5%/3%/3%/10%/5%). Weights sum to exactly 1.0. Returns confidence (0–1) and reasoning array. Proposal-only — never auto-trades. |
-| `vol_regime_engine.py` | **[Phase 6] Volatility regime classifier** — 5 regimes: low_volatility, normal_volatility, high_volatility, shock_regime, liquidity_crunch. Computes per-regime score from annualized vol, shock score, tariff index, stable health, orderbook depth, exec quality. Returns regime, confidence, all scores, inputs, and per-regime recommendations (leverage adjustment, slippage tolerance, hedge aggressiveness, execution style). |
-| `backtester.py` | **[Phase 6] Historical backtester** — deterministic simulation with seeded RNG (no live data required). Supports strategies: momentum, carry_arb, buy_hold. Simulates N trading days, applies fee + slippage model, tracks equity curve, computes Sharpe ratio, max drawdown (`_compute_max_drawdown`), win rate, VaR/CVaR (`_compute_var_cvar`), per-strategy PnL breakdown. Config echoed in result. Result cached to Redis with TTL. |
+Reusable position/accounting math used by paper execution and historical replay.
 
----
+Handles:
+- long/short opens
+- partial reductions
+- full closes
+- long↔short flips
+- average-entry preservation
+- realized/unrealized P&L
+- fees
+- signed funding
+- slippage
+- funding-only credits/debits for historical replay
 
-### `backend/ml/` — ML Feature Store & Training Scaffold (Phase 6)
+This prevents separate execution/backtest accounting formulas from drifting apart.
 
-| File | What it does |
-|------|--------------|
-| `feature_store.py` | Builds a 15-feature vector from live state snapshots. Features: `tariff_index`, `tariff_delta`, `shock_score`, `shock_abs`, `funding_skew`, `basis_spread`, `vol_regime_encoded`, `stable_health`, `stable_flow`, `divergence_score`, `orderbook_imbalance`, `liquidity_score`, `slippage_score`, `exec_quality`, `predictor_conf`. Missing data handled with safe defaults. Returns feature dict, ordered feature names, quality report (`all_present`, `stale_fields`), and `features_to_vector()` converter. |
-| `training.py` | Offline-only training scaffold. Supports logistic regression (scikit-learn) and optional LightGBM. Requires `MIN_SAMPLES` (default 20) to train. Returns `success`, `method`, `accuracy`, `n_samples`, `reason` (on failure), `ts`. Stores trained model in module-level `_TRAINED_MODEL` for inference. Heuristic fallback always active. |
-| `inference.py` | Prediction endpoint. Uses trained model if available, else `_heuristic_predict()` which scores from `tariff_index`, `shock_score`, `stable_health`, `predictor_conf`. Returns `probability` (0–1), `prediction` (0/1), `confidence` (0–1), `model_type` (`heuristic_fallback` or `logistic`/`lightgbm`), `ts`. |
-| `explainability.py` | Feature importance and SHAP-based explanations. Returns top drivers with feature name, description, contribution value, and direction. SHAP is optional (fail-open if unavailable). Falls back to coefficient-based importance for logistic regression. |
-| `__init__.py` | Package marker. |
+## `risk_policy.py`
 
----
+Shared configured risk-policy/runtime boundary. Supplies the same environment-defined leverage, margin, daily-loss and cooldown settings to risk/execution consumers and exposes Redis-backed shared throttle, daily realized P&L and live cooldown state.
 
-### `backend/agents/` — Heuristic AI Agents (7 agents)
+## `redis_runtime.py`
 
-All agents follow the same interface: `evaluate(state: dict) -> list[dict]`. Each signal contains: `agent`, `signal`, `confidence` (0–1), `severity` (low/medium/high), `direction` (bullish/bearish/neutral), `proposed_action`, `reason`, `ts`, `data_ts_used`. Deterministic, explainable, no ML models.
+Process-level Redis runtime boundary:
+- bounded sync/async pools
+- connect/socket timeouts
+- health/reconnect telemetry
+- optional key namespace
+- publish/pubsub helpers
+- graceful shutdown
 
-| File | Agent | Monitors | Confidence range |
-|------|-------|----------|-----------------|
-| `risk_agent.py` | Risk Agent | Liquidation distance, margin usage, throttle conditions (high shock + high vol). Proposes `reduce_size` or `block_execution`. | 0.75–0.90 |
-| `macro_agent.py` | Macro Agent | Tariff momentum acceleration, GDELT shock spikes (>0.5), high tariff regime (>60). Proposes `reduce_exposure` or `hedge`. | 0.70–0.85 |
-| `execution_agent.py` | Execution Agent | Pre-trade safety: spread width, liquidity depth, price integrity. Warns on high slippage (>20bps), wide spreads. Can `block_execution` in live mode. | 0.75–0.90 |
-| `liquidity_agent.py` | Liquidity Agent | Stablecoin depeg (>50bps), OB imbalance (>0.7), thin liquidity. Proposes `reduce_size` or `pause_trading`. | 0.70–0.85 |
-| `hyperliquid_agent.py` | Hyperliquid Agent | HL-specific microstructure: OB imbalance direction, spread compression, trade aggression, liquidity thinning. Emits `MICROSTRUCTURE_SIGNAL`, `LIQUIDITY_THINNING_WARNING`. | 0.70–0.90 |
-| `jupiter_agent.py` | Jupiter Agent | Jupiter/Solana swap intelligence: quote freshness (>30s stale), route complexity (warns >3 hops), price impact (warns >1%), slippage risk, Solana congestion (RPC latency, slot lag). Reuses `solana_liquidity.py`. Emits `JUPITER_QUOTE_STALE`, `JUPITER_SLIPPAGE_SPIKE`. | 0.70–0.95 |
-| `hedging_agent.py` | Hedging Agent | Position-aware hedge recommendations. Urgency score from shock, vol, funding, margin usage. Proposes reduce_exposure, add_hedge, rotate_to_stables, or increase_size. Returns per-position actions with urgency scores and suggested hedge ratios. | 0.70–0.90 |
+This replaced independent Redis clients and application-owned Redis process behavior.
 
----
+## `state_store.py`
 
-### `backend/ingest/` — Data Ingestion (7 sources)
+Realtime snapshot/coordination interface over the shared Redis runtime, with process fallback where research semantics allow it.
 
-APScheduler-driven periodic jobs. All fail-open — errors logged as WARNING, never crash.
+Also provides:
+- execution idempotency claim/get/release helpers
+- distributed lease helpers
+- snapshot reads/writes
+- compatibility behavior for older keys
 
-| File | Source | What it fetches | Frequency |
-|------|--------|----------------|-----------|
-| `wits_ingest.py` | World Bank WITS | Tariff rates by country pair, trade values | 60 min |
-| `gdelt_ingest.py` | GDELT Project | News tone/volume for trade-policy keywords | 5 min |
-| `kraken_ingest.py` | Kraken | Spot prices BTC/SOL/ETH | 30 s |
-| `coingecko_ingest.py` | CoinGecko | Prices + market cap, fallback source | 60 s |
-| `pyth_ingest.py` | Pyth Network | Oracle prices (primary authority) | 10 s |
-| `hyperliquid_ws.py` | Hyperliquid | Perp prices, OB data, funding via WebSocket | Real-time |
-| `drift_ingest.py` | Drift Protocol | SOL-PERP prices, funding rates | 60 s |
-| `scheduler.py` | — | APScheduler setup, registers all ingest jobs | — |
+PostgreSQL remains the durable source of truth for order/fill/decision history.
 
----
+## `state_keys.py`
 
-### `backend/execution/` — Trade Execution
+Canonical state-key contract for normalized producer/consumer identities:
+- Pyth/Kraken/CoinGecko price aliases
+- WITS aggregate state
+- GDELT-related state
+- stablecoin health
+- prediction
+- price integrity
 
-| File | What it does |
-|------|--------------|
-| `router.py` | **ExecutionRouter** — central trade dispatcher. Applies risk checks before routing. Selects executor by venue (paper/hyperliquid/drift/jupiter). In paper mode: all trades go to PaperExecutor. Injects live price from Pyth→Kraken→CoinGecko cascade when price omitted. Checks freshness (`PRICE_FRESHNESS_THRESHOLD_S`) — stale blocks live, tags paper as DEGRADED. Emits TRADE_BLOCKED_STALE_DATA or TRADE_DEGRADED_DATA events. |
-| `paper_exec.py` | **PaperExecutor** — simulated execution engine. Handles open (new position), close (full exit), reduce (partial), and flip (direction reversal) for both longs and shorts. Persists to Postgres and Redis. Emits ORDER_SENT → ORDER_FILLED events. No cooldown in paper mode. |
-| `hyperliquid_exec.py` | **HyperliquidExecutor** — live execution via Hyperliquid API. Requires `HYPERLIQUID_PRIVATE_KEY`. Constructs and signs orders, handles partial fills and errors gracefully. |
-| `drift_exec.py` | **DriftExecutor** — Drift Protocol execution. Disabled if no Solana key. |
-| `jupiter_exec.py` | **JupiterExecutor** — Jupiter swap aggregator execution. Disabled if no `SOLANA_PRIVATE_KEY`. Quotes route, checks price impact, executes swap. |
-| `solana_tx.py` | Solana transaction helpers — keypair loading, serialization, submission to RPC. |
+Provider-native keys remain available where useful for provenance/compatibility.
 
----
+## `operator_auth.py`
 
-### `backend/data/` — Database Layer
+Minimal operator Bearer-token boundary for state-changing external routes.
 
-| File | What it does |
-|------|--------------|
-| `db.py` | PostgreSQL connection pool via psycopg2. Schema initialization: creates `index_snapshots`, `events`, `market_ticks`, `positions` tables with indexes. Connection retry with backoff. |
-| `repositories/index_repo.py` | Index snapshot read/write — latest value and time-windowed history. |
-| `repositories/market_repo.py` | Market tick persistence and time-windowed queries. |
-| `repositories/events_repo.py` | Event log read/write with pagination. |
-| `repositories/positions_repo.py` | Position CRUD — open, close, update, list all. |
+Key behavior:
+- constant-time token comparison
+- live-capable mode always requires auth
+- missing required server token fails closed
+- explicit route/pattern classification for mutations
+- read-only/research calculation POSTs are not automatically treated as writes
+- direct Jupiter swap has an independent default-off feature gate
+
+This is intentionally not a full user-account/OAuth/JWT platform.
+
+## `readiness.py`
+
+Mode-aware operational readiness aggregation over existing contracts:
+- PostgreSQL
+- required live schema
+- Redis
+- market-price availability/freshness
+- price integrity
+- ingestion visibility
+- risk runtime/policy sanity
+- operator authorization
+- execution configuration
+- production-ready executor availability
+
+Paper/research can remain available while degraded. Live-capable mode fails readiness when a critical prerequisite is missing.
+
+## Other core modules
+
+| File | Role |
+|------|------|
+| `event_bus.py` | Unified event persistence + Redis pub/sub fanout across execution lifecycle, risk, ingestion, governance, audit and market/product events. |
+| `price_authority.py` | Pyth → Kraken → CoinGecko execution price cascade with source attribution. |
+| `price_validator.py` | Cross-source integrity/deviation evaluation; insufficient source coverage does not falsely become `OK`. |
+| `schemas.py` / `models.py` | Typed/Pydantic contracts including portfolio/risk structures. |
+| `normalization.py` | Provider normalization utilities. |
+| `timeutils.py` | UTC/window helpers. |
 
 ---
 
-## Frontend (`frontend/`)
+# `backend/api/` — HTTP & WebSocket Surfaces
 
-Single-page application. No React, no build step. Vanilla HTML + CSS + JS + Chart.js.
+The API surface has expanded well beyond the earlier Phase-6 route table. `main.py` is the authoritative router registration list.
 
-### `frontend/index.html`
+## Core market / macro
 
-615 lines. 8-tab dashboard with all panel containers. Key structure:
+| Router | Main purpose |
+|--------|--------------|
+| `index_routes.py` | Tariff/index latest/history/components/macro-terminal views. |
+| `markets_routes.py` | Multi-source prices, funding and price integrity. |
+| `divergence_routes.py` | Cross-venue spread/dislocation analysis. |
+| `stablecoin_routes.py` | Peg/stress/stablecoin health. |
+| `predict_routes.py` | Macro prediction. |
+| `macro_routes.py` | Macro/trade event timeline and reaction research. |
+| `macro_sensitivity_routes.py` | Tariff beta / macro sensitivity. |
+| `cross_asset_routes.py` | Correlation and contagion research. |
 
-**Header** — title, DB indicator, price integrity badge, auto-refresh toggle (AUTO/PAUSED), light/dark theme toggle (persists to localStorage), WebSocket connection status badge.
+## Execution / risk
 
-**Navigation** — 8 tab buttons: Index, Markets, Divergence, Stablecoins, Strategy, Execution, Risk, Agents.
+| Router | Main purpose |
+|--------|--------------|
+| `execution_routes.py` | Primary order path, positions/trades, conditional orders, smart orders, lifecycle-linked execution requests and direct Jupiter route. Protected mutations use operator auth when required. |
+| `risk_routes.py` | Risk status/guardrails/stress/regime-analog views using the shared RiskEngine policy/runtime. |
+| `allocation_routes.py` | Capital allocation proposals, rebalance preview and allocation→execution sizing preview. |
+| `portfolio_risk_routes.py` | Portfolio exposure/VaR/CVaR/concentration detail. |
+| `liquidation_routes.py` | Liquidation heatmap. |
+| `slippage_routes.py` | Slippage curves/safe-size research. |
+| `hedge_routes.py` | Asset/cross-asset hedge research and previews. |
+| `protection_routes.py` | Proposal-only portfolio protection status/previews. |
 
-**Index tab** — Tariff Index, Shock Score, Rate of Change, Last Updated metrics. Index & Shock History chart with `1h/4h/1d/7d` timeframe buttons and LIVE freshness badge. Components table (left), Prediction panel (right). Macro Terminal: WITS series, Rolling delta, Country weights, Correlation heatmap (2×2 grid).
+## Research / historical evaluation
 
-**Markets tab** — Live prices table with markets-freshness badge. Funding chart + Carry panel (grid-2). Microstructure cards (OB imbalance, Basis, Price Integrity). Solana Execution Quality cards. Funding Arb panel. Basis Monitor panel. Collapsible Feed Status panel (toggle button shows/hides).
+| Router | Main purpose |
+|--------|--------------|
+| `backtest_routes.py` | Synthetic research + historical event-time backtest, durable run history and data coverage. |
+| `heuristic_routes.py` | Versioned heuristic registry, persisted evaluation, performance and evaluation history. |
+| `sandbox_routes.py` | Strategy A/B research comparison. |
+| `replay_routes.py` | Event/trade simulation research surfaces; distinct from immutable decision replay. |
+| `scenario_routes.py` | Proposal-only scenario research. |
 
-**Divergence tab** — Spread bar chart with timeframe selector. Spreads table. Dislocation alerts list.
+## Decision Audit — `decision_routes.py`
 
-**Stablecoins tab** — Peg monitor boxes (USDC/USDT/DAI). Depeg heatmap table. Stress panel. Alerts list. Stable flow panel.
+Current decision endpoints include:
+- `POST /api/decisions` — explicit/manual decision-record creation
+- `GET /api/decisions`
+- `GET /api/decisions/{decision_id}`
+- `POST /api/decisions/{decision_id}/replay` — exact historical replay
+- `POST /api/decisions/{decision_id}/counterfactual` — research-only what-if replay
 
-**Strategy tab** — Active rule signals. Registered rules list. Adaptive Risk Weights panel. Portfolio Proposal panel. **Capital Allocation panel** (venue weight bars, confidence, RAR, reasoning). **ML Signal Layer panel** (BTC up probability, confidence, feature driver bars). **Historical Backtest** (inline form: strategy/window/capital/venue/fees + submit → results panel with equity curve SVG).
+Replay/counterfactual endpoints are calculation-only and never route an order.
 
-**Execution tab** — Decision Data Status panel (integrity/freshness pre-trade check, paper mode annotation). Order form (venue, market, side, size, price, submit with risk-check feedback). Positions table. Trades table. EQI panel.
+## ML Governance — `ml_routes.py`
 
-**Risk tab** — Throttle banner (active/inactive). **Portfolio Risk Dashboard** (exposure breakdown, VaR/CVaR, concentration risk, venue exposure table). **Volatility Regime panel** (5-regime bar chart, current regime badge, recommendations). Leverage/Margin/PnL metric row. Guardrails panel. Stress test form (4 scenarios) + result. Monte Carlo form (symbol, size, horizon + time unit selector: minutes/hours/days, paths) + result + distribution chart. Regime Replay panel. Liquidation Heatmap table.
+Current ML routes cover:
+- feature/latest prediction views
+- offline candidate training
+- durable training history/runs
+- model registry / active model
+- model health
+- dataset registry
+- explicit promote/rollback
+- ML-vs-heuristic comparison using exact timestamp/sample alignment
 
-**Agents tab** — Status row (agent count, signal count, last updated). Agent Signals list (expandable reasoning). Agent Registry cards.
+Training/promote/rollback are operator mutations when auth is required.
 
-**Event Timeline** — always-visible bottom panel, last 50 events, color-coded by type (fill/trade/alert/error/info).
+## Ingestion / operations
+
+| Router | Main purpose |
+|--------|--------------|
+| `ingestion_routes.py` | Source Registry, ingestion health/status, run history and artifact provenance. |
+| `health_routes.py` | Existing system/feed/Redis/data-quality health plus `/api/health/live` and `/api/health/ready`. |
+| root probe router | `/live` and `/ready`. |
+| `events_routes.py` | Durable event history. |
+| `ws_routes.py` | WebSocket event delivery through shared Redis async pub/sub. |
+
+## Institutional / geopolitical research
+
+The earlier product layers remain registered through routers including:
+- `equities_routes.py`
+- `strategy_routes.py`
+- `agents_routes.py`
+- `signals_routes.py`
+- `watchlists_routes.py`
+- `reports_routes.py`
+- `explain_routes.py`
+- `geopolitical_routes.py`
+- `protection_routes.py`
+- funding/basis/stable-flow/metrics/Solana/microstructure/yield routes
 
 ---
 
-### `frontend/assets/styles.css`
+# `backend/compute/` — Deterministic Analytics, Replay & Decisions
 
-~1,170 lines. CSS custom properties with two themes:
+## `execution_decision.py`
 
-```css
-:root { /* dark — default */ }
-[data-theme="light"] { /* light overrides */ }
+Pure deterministic final pre-trade helpers shared by runtime execution and replay:
+- data guardrail evaluation
+- execution-agent evaluation
+- final ALLOW/BLOCK combination
+
+The combiner submits no orders, persists nothing and reads no Redis state.
+
+## `decision_evaluator.py`
+
+Pure component evaluators for exact replay:
+- exact heuristic version
+- exact governed ML artifact
+- historical risk using inert runtime state
+- deterministic allocation with historical `as_of`
+- final execution-boundary recomputation
+
+This lets runtime/replay share decision semantics rather than approximating each other.
+
+## `decision_replay.py`
+
+Canonical decision hashing and exact replay:
+- stable SHA-256 hash
+- timestamp/decimal/JSON normalization
+- structured field diffs
+- exact artifact/version verification
+- `EXACT MATCH`, `MISMATCH`, `UNAVAILABLE`
+- `audit_only=true`
+- `orders_submitted=0`
+
+It deliberately does not import execution routing, StateStore or Redis.
+
+## `counterfactual_replay.py`
+
+Research-only what-if replay over immutable historical inputs:
+1. require exact baseline replay;
+2. deep-copy recorded inputs;
+3. apply allowlisted semantic overrides;
+4. preserve `not_used` components;
+5. preserve heuristic/model/policy identities;
+6. invoke existing deterministic evaluators;
+7. compare original vs counterfactual results/final decision.
+
+No persistence or execution is performed.
+
+## Risk / allocation / execution research
+
+| File | Role |
+|------|------|
+| `risk_engine.py` | Portfolio-aware leverage/margin/daily-loss/throttle/cooldown enforcement with pure-reduction detection and historical `as_of` support. |
+| `capital_allocator.py` | Proposal-only venue allocation plus execution sizing preview. |
+| `smart_execution.py` | TWAP/VWAP planning/status for paper/proposal workflows. |
+| `slippage_model.py` | Slippage curves/safe-size research. |
+| `execution_metrics.py` | Execution Quality Index and fill/slippage statistics. |
+| `liquidation_heatmap.py` | Leverage/price-drop liquidation grid. |
+| hedge/cross-asset modules | Hedge ratio and cross-asset proposal research. |
+
+## Historical evaluation
+
+### Historical backtester
+Supports:
+- deterministic synthetic research;
+- persisted historical event-time replay;
+- strict event ordering / look-ahead protection;
+- latency/fees/funding/slippage/partial fills;
+- PositionLedger accounting;
+- durable run metadata and manifests.
+
+Historical mode has no hidden synthetic fallback.
+
+### `heuristic_performance.py`
+Evaluates stable rule IDs/versions on persisted event-time observations with horizon outcomes, classification/risk-control metrics, regime segmentation and decay analysis. Missing realized history is not fabricated.
+
+## Existing market / institutional compute layers
+
+The earlier functionality remains, including:
+- tariff/index/shock computation
+- divergence/regime/carry
+- stablecoin health/flow/playbook
+- Monte Carlo and stress tests
+- microstructure
+- funding arb / basis
+- portfolio optimization
+- volatility regime
+- equity analytics / tariff exposure
+- macro events / sensitivity
+- cross-asset intelligence
+- scenario engine
+- explainability
+- agent consensus / signal attribution
+- geopolitical/sanctions/conflict/shipping/energy risk
+- portfolio protection
+- report generation / watchlists
+
+---
+
+# `backend/ml/` — Governed ML Lifecycle
+
+The governed PostgreSQL/model-registry path is now authoritative rather than an older process-only trained-model description.
+
+## `feature_store.py`
+- 15-feature schema
+- schema ID/version
+- deterministic feature ordering
+- observed/derived/fallback/default provenance
+- quality counts/ratios
+
+## `dataset.py`
+- label definition ID/version
+- strict temporal ordering
+- deterministic vectors
+- SHA-256 dataset manifest
+- provenance summary
+
+## `training.py`
+- offline candidate training
+- explicit supported method handling
+- sklearn pipeline/scaling
+- temporal walk-forward validation
+- validation samples/metrics
+- durable training/model records
+- no automatic promotion
+
+## `governance.py`
+- artifact serialization/deserialization
+- SHA integrity checks
+- promotion/rollback eligibility
+- model-health inspection
+
+## `inference.py`
+- durable active-model lookup
+- schema/artifact verification
+- restart-safe loading/caching
+- prediction provenance/input hash persistence
+- explicit heuristic fallback
+
+## `backend/data/repositories/ml_repo.py`
+Durable datasets, training runs, immutable model versions and predictions. Activation is transactional.
+
+---
+
+# `backend/ingest/` — Source Registry, Collection & Provenance
+
+Important current files include:
+- `source_registry.py` — stable source IDs, cadence, native/canonical snapshot identities and fallback metadata
+- `provenance.py` — `IngestRunContext`
+- `scheduler.py` — APScheduler + Redis lease coordination + run-ledger lifecycle
+- WITS, GDELT, Pyth, Kraken, CoinGecko, Drift and Hyperliquid provider modules
+- equity provider modules such as yfinance/Stooq
+
+WITS/GDELT and market providers report fallback/degraded state explicitly. Hyperliquid WebSocket state can appear in the Source Registry without pretending it is a scheduled durable ingest run.
+
+---
+
+# `backend/execution/` — Paper & Prototype Live Execution
+
+## `router.py`
+
+Primary flow:
+
+```text
+request validation
+    ↓
+price/data guardrails
+    ↓
+RiskEngine
+    ↓
+ExecutionAgent
+    ↓
+pure final ALLOW/BLOCK
+    ↓
+immutable execution_pre_trade_final audit
+    ↓
+if allowed → paper/selected executor
 ```
 
-Key component classes: `.header`, `.tab-nav`, `.tab-btn`, `.tab-panel`, `.card`, `.card-header`, `.metric-row`, `.metric-box`, `.metric-value`, `.badge` (badge-green/red/blue/yellow/purple), `.freshness-badge` (live/fresh/stale/degraded/nodata), `.timeframe-selector`, `.tf-btn`, `.inline-form`, `.form-group`, `.form-label`, `.form-input`, `.form-select`, `.btn`, `.btn-primary`, `.throttle-banner`, `.rule-card`, `.agent-signal-card`, `.agent-signal-reason-detail` (collapsible), `.guardrail-row`, `.alert-item`, `.timeline-panel`, `.timeline-body`, `.auto-refresh-toggle`, `.theme-toggle`, `.integrity-badge`, `.status-badge`, `.section-header`, `.section-title`, `.empty-state`, `.table-scroll`, `.chart-container`, `.grid-2`, `.grid-3`.
+Also:
+- uses PriceAuthority when price is omitted;
+- records source/freshness/integrity context;
+- produces replayable risk/data/agent inputs;
+- preserves pure-reduction safety semantics;
+- fails API-linked live new exposure when required final audit persistence is unavailable.
+
+## `paper_exec.py`
+Paper simulator backed by PositionLedger/accounting and durable order/fill lifecycle persistence.
+
+## `hyperliquid_exec.py` / `drift_exec.py`
+Prototype live venue adapters. Current readiness intentionally does not treat them as production-ready.
+
+## Jupiter / Solana execution helpers
+Separate spot-swap prototype path. Direct API execution has its own default-off gate and operator authorization requirement; it is not represented as equivalent to the hardened perp-style primary order pipeline.
 
 ---
 
-### `frontend/assets/api.js`
+# `backend/data/` — PostgreSQL Durable State
 
-~130 lines. All REST API methods as a single `API` module. Two helpers: `fetchJSON(path)` (GET with error handling) and `postJSON(path, body)` (POST). ~50 endpoint methods organized by domain. Phase 6 additions: `getAllocationLatest`, `postRebalancePreview`, `getMLFeaturesLatest`, `getMLPredictionLatest`, `postMLTrainOffline`, `getMLTrainingHistory`, `postBacktestRun`, `getBacktestLatest`, `getBacktestHistory`, `getVolRegime`, `getVolRecommendations`, `getPortfolioRiskSummary`, `getPortfolioRiskContributions`, `getPortfolioRiskExposures`, `getRedisHealth`.
+## `db.py`
 
----
+Psycopg2 `ThreadedConnectionPool` helper with:
+- lazy shared pool
+- migration application through `migrations.sql`
+- PostgreSQL advisory lock around migrations
+- connection/query helpers
+- required-table readiness check
+- idempotent shutdown
 
-### `frontend/assets/ui.js`
+No SQLAlchemy/asyncpg/Alembic layer is used.
 
-~1,265 lines. All render functions as a single `UI` module. Every function guards against null data and missing DOM elements. Key functions:
+## Important repositories
 
-| Function | Renders |
-|----------|---------|
-| `renderIndexTab(data)` | Index metrics, chart, components, prediction, macro terminal (calls `renderMacroTerminal`) |
-| `renderMacroTerminal(mt)` | WITS series table, rolling delta bar chart, country weights bars, correlation heatmap grid |
-| `renderMarketsTab(data)` | Prices table, funding chart, carry panel, microstructure cards, Solana quality, funding arb, basis, feed status |
-| `renderDivergenceTab(data)` | Spread bar chart, spreads table, dislocation alerts |
-| `renderStablecoinsTab(data)` | Peg monitor boxes, depeg heatmap, stress panel, alerts, stable flow |
-| `renderStrategyTab(data)` | Rule signals, rules list, adaptive weights, portfolio proposal; calls `renderAllocationPanel`, `renderMLPanel`, `renderBacktestPanel` |
-| `renderExecutionTab(data)` | Positions table, trades table, EQI panel |
-| `renderDecisionDataPanel(data)` | Pre-trade data status (integrity, freshness, mode warning) |
-| `renderRiskTab(data)` | Throttle banner, metrics, guardrails, stress result, MC result, liquidation heatmap, regime replay; calls `renderPortfolioRiskPanel`, `renderVolRegimePanel` |
-| `renderAgentsTab(data)` | Agent signal cards (with collapsible reasoning), registry cards |
-| `renderFeedStatus(data)` | Feed status table with age, status badges, authority flag |
-| `renderAllocationPanel(data)` | **[Phase 6]** Animated venue weight bars, RAR annotations, confidence badge, collapsible reasoning |
-| `renderMLPanel(data)` | **[Phase 6]** BTC up probability, confidence, model type, feature driver bars |
-| `renderBacktestPanel(data)` | **[Phase 6]** Metrics grid (return/Sharpe/drawdown/win rate/trades/slippage/VaR/CVaR), config summary, per-strategy PnL, SVG equity curve |
-| `renderVolRegimePanel(volRegime, volRecs)` | **[Phase 6]** Regime badge, per-regime score bars, recommendations card |
-| `renderPortfolioRiskPanel(data)` | **[Phase 6]** Exposure metrics, VaR/CVaR, concentration risk, venue exposure table, warnings |
-| `renderRedisHealth(data)` | **[Phase 6]** Redis connection status, ping latency, memory, key count, fallback mode flag |
-| `renderFreshnessBadge(id, ts)` | LIVE/FRESH/STALE/DEGRADED/NO DATA badge with age |
-| `renderTimeline(events)` | Event timeline rows — color-coded by type |
-| `addEventToTimeline(event, isNew)` | Prepends single event to timeline (called by WS flush) |
-| `updateConnectionStatus(connected)` | Header WS status badge |
+| Repository | Responsibility |
+|------------|----------------|
+| `orders_repo.py` | Order intents, orders, order events, fills, paper orders, conditional orders, trigger claims/OCO lifecycle. |
+| `backtest_repo.py` | Durable backtest run/config/window/manifest/status/metrics. |
+| `heuristic_repo.py` | Persisted heuristic evaluations/performance queries. |
+| `ingest_repo.py` | Ingest runs, reliability/failure tracking and data provenance. |
+| `ml_repo.py` | Governed datasets, training runs, model versions, predictions and transactional activation. |
+| `decision_repo.py` | Immutable decision-audit create/get/list boundary. No mutable finalize/update operation. |
+| existing market/index/event/position repositories | Durable research/market/history data. |
 
----
+## Schema families
 
-### `frontend/assets/app.js`
+`migrations.sql` now covers:
+- market/index/funding/stablecoin/regime history
+- events
+- positions / legacy paper compatibility
+- order intents / orders / events / fills / paper orders
+- conditional orders
+- backtest runs
+- heuristic evaluations
+- ingest runs / data provenance
+- ML datasets / training runs / models / predictions
+- immutable `decision_audit`
 
-~490 lines. Main orchestrator as `App` module. Key responsibilities:
-
-**Init sequence** — `initTheme` (localStorage, toggle button, re-themes charts) → `initTabs` → `initCharts` → `initWebSocket` → `initOrderForm` → `initStressTestForm` → `initMCForm` → `initBacktestForm` → `initFeedStatusToggle` → `initAutoRefreshToggle` → `initTimeframeSelectors` → `initVisibilityListener` → first `refresh()` → 5s polling interval.
-
-**Tab refresh functions** — `refreshIndex`, `refreshMarkets`, `refreshDivergence`, `refreshStablecoins`, `refreshStrategy` (now includes allocation + ML prediction), `refreshExecution`, `refreshRisk` (now includes portfolio risk + vol regime + recommendations), `refreshAgents`. Each uses `Promise.allSettled` — partial data still renders.
-
-**Form handlers:**
-- `initBacktestForm` — captures strategy/window/capital/venue/fees, calls `API.postBacktestRun`, renders result + adds BACKTEST_COMPLETED event to timeline. Button disables during run, re-enables on completion or error.
-- `initMCForm` — captures symbol/size/horizon_value/horizon_unit/paths, calls `convertHorizonToHours(value, unit)` (minutes÷60, hours×1, days×24), runs MC, shows human-readable summary ("Horizon: 15 minutes").
-- `initStressTestForm` — runs stress test scenario, renders result in Risk tab.
-- `initOrderForm` — submits order via `API.postOrder`, shows feedback.
-
-**Performance features:**
-- `wsMessageBuffer` + `wsFlushTimer` — batches WS messages, flushes every 50ms.
-- `tabVisible` flag — visibility change listener pauses polling when tab hidden, resumes on focus.
-- `autoRefresh` flag — AUTO/PAUSED toggle, stops/starts 5s interval.
-- `chartTimeframes` map — persists selected timeframe per chart, passed to API calls.
+The database remains additive/backward-compatible rather than replacing historical tables wholesale.
 
 ---
 
-### `frontend/assets/charts.js`
+# Frontend (`frontend/`)
 
-~230 lines. Chart.js chart factory and management:
-- `Charts.create(id, type, config)` — creates chart, stores in internal registry.
-- `Charts.updateChart(chart, data)` — updates labels and datasets, calls `chart.update()`.
-- `Charts.reThemeAllCharts()` — iterates all registered charts, updates grid/tick/legend colors for dark↔light theme switch.
-- Pre-creates all charts on init: index history (line, dual-axis), funding bar, divergence bar, MC distribution bar.
-- Theme-aware color helpers: `gridColor()`, `textColor()`.
+Single-page vanilla HTML/CSS/JavaScript + Chart.js. No React/build-system migration.
 
----
+## `frontend/index.html`
 
-### `frontend/assets/ws.js`
+Current top-level product areas:
+- Index
+- Markets
+- Divergence
+- Stablecoins
+- Strategy
+- Execution
+- Equities
+- Geopolitics
+- Risk
+- Agents
+- Decision Audit
 
-WebSocket client with automatic reconnect:
-- Connects to `/ws/live` on init.
-- On disconnect: exponential backoff reconnect (1s, 2s, 4s… max 30s). If tab hidden, defers reconnect until tab becomes visible.
-- On message: parses JSON, pushes to `App.wsMessageBuffer` for batched flush.
-- Updates connection status badge (LIVE/OFFLINE) on connect/disconnect.
+## `frontend/assets/api.js`
+Central REST client for older market/intelligence panels plus historical backtests, heuristics, ingestion/provenance, ML governance, durable decision audit/replay, execution lifecycle/safety and institutional/geopolitical surfaces.
 
----
+## `frontend/assets/app.js`
+Main tab/form orchestration for WebSocket + REST refreshes, orders, stress/Monte Carlo/backtests, heuristic lab, institutional/geopolitical forms and decision selection/replay.
 
-## Tests (`tests/`)
+## `frontend/assets/ui.js`
+Main renderer collection, including historical Backtest Lab, execution safety/lifecycle/accounting, Redis telemetry, portfolio risk, heuristic performance, ingestion/provenance, ML governance, Decision Audit and institutional/geopolitical panels.
 
-145 tests across 7 files. Run with `python -m pytest tests/ -q`.
+## `frontend/assets/frontend_alignment.js`
+Compatibility stub retained after PR #12 moved temporary frontend-alignment behavior into the core UI. It should remain non-authoritative.
 
-| File | Tests | What it covers |
-|------|-------|---------------|
-| `test_index_calc.py` | 18 | Tariff index computation, GDELT shock z-score, edge cases |
-| `test_shock_calc.py` | 22 | Shock score normalization, empty data, threshold detection |
-| `test_divergence_alerts.py` | 20 | Cross-venue spread detection, severity classification, alert generation |
-| `test_risk_throttle.py` | 25 | Risk engine guardrails (leverage/margin/daily loss), reducing bypass, cooldown logic |
-| `test_paper_trading.py` | 15 | Paper executor open/close/reduce/flip, position tracking, fill events |
-| `test_new_features.py` | 18 | Phase 5 features — funding arb, basis engine, stable flow, solana quality, hedge ratio, slippage model, regime replay |
-| `test_phase6.py` | 47 | Capital allocator (weights sum to 1, caps/floors, shock/vol sensitivity), vol regime engine (5 regimes, scores, recommendations), backtester (structure, determinism, VaR/CVaR, Sharpe), ML feature store (15 features, finite values, quality), ML inference (heuristic path, no-model path), ML training (insufficient data, mismatched lengths), Redis health fallback, portfolio risk math (`_compute_var_cvar`, `_compute_max_drawdown`, `_compute_sharpe`) |
+## `frontend/assets/operator_access.js`
+Small operator-access enhancement:
+- injects operator control into the existing header
+- stores token in `sessionStorage`
+- attaches bearer credentials only to classified protected mutations
 
----
+## `frontend/assets/counterfactual_replay.js`
+Research-only Decision Audit enhancement:
+- counterfactual scenario inputs
+- request to `/api/decisions/{id}/counterfactual`
+- original-vs-counterfactual rendering
+- applied/not-applicable scenario display
+- explicit no-order/no-persistence/no-retraining labels
 
-## Event Type Reference
-
-85 event types defined in `backend/core/event_bus.py`. Key groups:
-
-| Group | Types |
-|-------|-------|
-| Index / Shock | `INDEX_UPDATE`, `SHOCK_SPIKE`, `INDEX_ALERT`, `MACRO_TERMINAL_UPDATE` |
-| Market / Prices | `PRICE_UPDATE`, `PRICE_DISLOCATION_ALERT`, `FUNDING_REGIME_FLIP`, `CARRY_UPDATE`, `CARRY_REGIME_FLIP` |
-| Divergence | `DIVERGENCE_ALERT`, `DISLOCATION_ALERT` |
-| Stablecoins | `STABLE_DEPEG_ALERT`, `STABLE_STRESS_ALERT`, `PEG_BREAK_PROB_UPDATE`, `STABLE_VOLUME_SPIKE`, `STABLE_FUNDING_SPIKE`, `STABLE_FLOW_UPDATE` |
-| Prediction | `PREDICTION_UPDATE`, `PREDICTION_CONFIDENCE_LOW` |
-| Risk | `RISK_THROTTLE_ON`, `RISK_THROTTLE_OFF`, `RISK_VAR_BREACH` |
-| Execution | `ORDER_SENT`, `ORDER_FILLED`, `SWAP_QUOTED`, `SWAP_SENT`, `TRADE_BLOCKED_STALE_DATA`, `TRADE_DEGRADED_DATA`, `EXECUTION_THROTTLE` |
-| Agents | `AGENT_SIGNAL`, `AGENT_ACTION_PROPOSED`, `AGENT_BLOCKED` |
-| Jupiter / Solana | `JUPITER_QUOTE_STALE`, `JUPITER_SLIPPAGE_SPIKE`, `JUPITER_ROUTE_RISK`, `SOLANA_CONGESTION_WARNING` |
-| Portfolio / Strategy | `RULE_ACTION_PROPOSED`, `PORTFOLIO_PROPOSAL`, `ADAPTIVE_WEIGHTS_UPDATE`, `REGIME_ANALOG_MATCH` |
-| Microstructure | `MICROSTRUCTURE_SIGNAL`, `LIQUIDITY_THINNING_WARNING` |
-| Execution quality | `EXECUTION_METRICS_UPDATE`, `SLIPPAGE_ANOMALY_ALERT` |
-| Funding arb / Basis | `FUNDING_ARB_OPPORTUNITY`, `FUNDING_ARB_REGIME_FLIP`, `BASIS_UPDATE`, `BASIS_OPPORTUNITY`, `BASIS_FEASIBILITY_LOW` |
-| Hedging | `HEDGE_PROPOSAL`, `HEDGE_REBALANCE_SUGGESTED`, `HEDGE_THROTTLE_RECOMMENDED`, `HEDGE_RATIO_UPDATE` |
-| Phase 5 | `SANDBOX_COMPARISON_RUN`, `REPLAY_COMPLETED`, `SLIPPAGE_MODEL_UPDATE`, `SAFE_SIZE_WARNING`, `STABLECOIN_PLAYBOOK_TRIGGERED` |
-| Phase 6 | `CAPITAL_ALLOCATION_UPDATE`, `REBALANCE_PREVIEW_CREATED`, `ML_FEATURES_UPDATED`, `ML_MODEL_TRAINED`, `ML_INFERENCE_UPDATE`, `BACKTEST_STARTED`, `BACKTEST_COMPLETED`, `VOL_REGIME_CHANGED`, `PORTFOLIO_RISK_UPDATE`, `REDIS_DEGRADED`, `REDIS_RECOVERED` |
-| System | `ERROR`, `STARTUP` |
+## `styles.css`, `charts.js`, `ws.js`
+Existing theme system, Chart.js helpers and WebSocket reconnect behavior remain authoritative.
 
 ---
 
-## Redis Key Conventions
+# Current Decision / Execution Safety Stack
 
-All keys use `desk:` prefix with TTLs. State store also supports legacy `index:latest` (both checked).
+```text
+Production readiness
+      ↓
+Operator authorization (state-changing external surfaces)
+      ↓
+Request validation
+      ↓
+Live enable / venue / market / order-type gates
+      ↓
+Redis idempotency for API-linked live new exposure
+      ↓
+Durable order intent
+      ↓
+Price / data guardrails
+      ↓
+Shared portfolio-aware RiskEngine
+      ↓
+ExecutionAgent pre-trade check
+      ↓
+Deterministic final ALLOW/BLOCK
+      ↓
+Immutable final decision audit
+      ↓
+Execution submission
+      ↓
+Durable lifecycle / fills / reconciliation state
+```
 
-| Key | TTL | Contents |
-|-----|-----|---------|
-| `desk:index:latest` / `index:latest` | 300s | Tariff index snapshot |
-| `desk:market:latest` | 60s | Multi-venue prices |
-| `desk:vol_regime:latest` | 120s | Volatility regime classification |
-| `desk:allocation:latest` | 180s | Capital allocation weights |
-| `desk:ml:features:latest` | 60s | 15-feature ML vector |
-| `desk:ml:prediction:latest` | 60s | Latest inference result |
-| `desk:backtest:latest` | 3600s | Last backtest result |
-| `desk:portfolio_risk:summary` | 60s | Portfolio risk metrics |
-| `desk:risk:throttle` | — | Throttle state (active/reason) |
-| `price:pyth:*`, `price:kraken:*`, etc. | 30s | Per-source price ticks |
-| `regime:latest` | 300s | Funding/vol regime |
-| `predict:latest` | 300s | Macro prediction |
-| `funding_arb:latest` | 120s | Funding arb signal |
-| `basis:latest` | 120s | Basis spreads |
-| `stablecoin:health:latest` | 120s | Stablecoin health |
+The stack uses independent barriers rather than treating any one check as sufficient.
 
-## Equity + Execution Safety Expansion Map
+---
 
-### New backend modules
-- `backend/ingest/yfinance_ingest.py` — optional yfinance MVP research-grade equity provider with deterministic demo fallback and equity universe constants.
-- `backend/ingest/stooq_ingest.py` — simple Stooq EOD CSV fallback, also fail-open to demo data.
-- `backend/compute/equity_analytics.py` — equity return, volatility, drawdown, moving average, RSI, beta proxy, relative strength, and volume analytics.
-- `backend/compute/equity_tariff_exposure.py` — transparent tariff exposure scoring using sector, supply-chain, import/export, WITS, GDELT, price reaction, volume, volatility, and relative weakness inputs.
-- `backend/agents/equity_risk_agent.py` — emits unusual volume, relative weakness, and risk-off equity signals.
-- `backend/agents/tariff_exposure_agent.py` — emits high tariff-risk equity signals from exposure scores.
-- `backend/agents/sector_rotation_agent.py` — emits sector rotation warnings from sector return clusters.
-- `backend/api/equities_routes.py` — registers all `/api/equities/*` endpoints.
-- `backend/api/strategy_routes.py` — adds `/api/strategy/performance`.
+# Liveness / Readiness
 
-### Extended backend modules
-- `main.py` now registers the equities and strategy routers.
-- `backend/compute/capital_allocator.py` now includes `execution_preview()` for proposal-only allocation-to-execution sizing checks.
-- `backend/api/allocation_routes.py` now exposes `POST /api/allocation/execution-preview`.
-- `backend/compute/smart_execution.py` now includes `create_smart_order()` for TWAP/VWAP schedules.
-- `backend/api/execution_routes.py` now exposes conditional paper orders and smart paper orders.
-- `backend/api/health_routes.py` now exposes `/api/health/data-quality`.
-- `backend/api/replay_routes.py` now exposes `/api/replay/trade-simulation`.
-- `backend/api/agents_routes.py` now exposes `/api/agents/performance` and `/api/agents/history`.
-- `backend/data/migrations.sql` now includes safe `conditional_orders` and `agent_signal_history` table creation.
+```text
+GET /live
+GET /ready
+GET /api/health/live
+GET /api/health/ready
+```
 
-### Frontend additions
-- `frontend/index.html` adds the Equities tab and additive panels for strategy performance, replay simulation, allocation execution preview, advanced orders, and agent memory.
-- `frontend/assets/api.js` adds client helpers for equities, data quality, strategy performance, allocation preview, conditional orders, smart orders, replay simulation, and agent memory.
-- `frontend/assets/charts.js` adds a Chart.js equity line chart helper.
-- `frontend/assets/ui.js` adds renderers for the Equities tab and new Strategy/Execution/Agents panels.
-- `frontend/assets/app.js` orchestrates polling and form submission for the new panels without changing WebSocket behavior.
+`/live` answers whether the process can serve the request.
 
-### Tests
-- `tests/test_equities_features.py` validates yfinance fallback, equity analytics, tariff exposure scoring with and without WITS/GDELT, equity endpoint fail-open JSON responses, agent signal structure, data quality fail-open behavior, and allocation execution preview structure.
+`/ready` answers whether the instance is safe/operational for its configured mode. Paper mode can be degraded yet usable. Live mode is blocked by missing critical database/schema, Redis/risk, market-data integrity/freshness, operator-auth or executor prerequisites.
 
-## Institutional Intelligence Layer Map
+---
 
-### New compute modules
-- `backend/compute/macro_events.py` — builds WITS/GDELT-aware macro/trade event timelines and market reaction estimates.
-- `backend/compute/macro_sensitivity.py` — tariff beta and macro sensitivity scoring with transparent components.
-- `backend/compute/cross_asset_intelligence.py` — correlation matrix and contagion path detection.
-- `backend/compute/scenario_engine.py` — custom scenario templates and proposal-only stress outputs.
-- `backend/compute/cross_asset_hedging.py` — cross-asset hedge recommendations across equities, ETFs, crypto, stables, and cash.
-- `backend/compute/portfolio_explainability.py` — portfolio/recommendation explanation payloads.
-- `backend/compute/agent_consensus.py` — confidence-weighted agent consensus.
-- `backend/compute/signal_attribution.py` — signal outcomes and attribution summary.
-- `backend/compute/watchlists.py` — user-defined watchlists with in-memory fallback.
-- `backend/compute/report_generator.py` — JSON report generator for institutional risk briefs.
+# Historical Research Stack
 
-### New/extended API routes
-- `backend/api/macro_routes.py` — `/api/macro/events`, `/api/macro/events/impact`, `/api/macro/events/{id}/reaction`.
-- `backend/api/macro_sensitivity_routes.py` — `/api/macro-sensitivity/assets`, `/api/macro-sensitivity/{ticker}`.
-- `backend/api/cross_asset_routes.py` — `/api/cross-asset/correlations`, `/api/cross-asset/contagion`.
-- `backend/api/scenario_routes.py` — `/api/scenario/templates`, `/api/scenario/run`.
-- `backend/api/explain_routes.py` — `/api/explain/portfolio`, `/api/explain/recommendation/{id}`.
-- `backend/api/signals_routes.py` — `/api/signals/outcomes`, `/api/signals/attribution`.
-- `backend/api/watchlists_routes.py` — `/api/watchlists` CRUD with in-memory fallback.
-- `backend/api/reports_routes.py` — daily, tariff, portfolio, and agent report endpoints.
-- `backend/api/hedge_routes.py` — extended with `/api/hedge/cross-asset` and `/api/hedge/preview`.
-- `backend/api/agents_routes.py` — extended with `/api/agents/consensus`.
-- `main.py` registers all new routers without changing existing routes.
+Three distinct concepts:
 
-### Frontend panels
-- Index tab: macro event calendar and market impact tracker.
-- Equities tab: tariff beta/macro sensitivity, cross-asset correlation/contagion, watchlists, and institutional reports.
-- Risk tab: scenario builder, cross-asset hedge recommendations, and portfolio explainability cards.
-- Agents tab: consensus and signal outcome attribution panels.
+### 1. Historical Backtester
+Reconstructs strategy/trade behavior over persisted event-time market history.
 
-### Tests
-- `tests/test_institutional_intelligence.py` covers new compute modules, safe default outputs, fail-open endpoint shapes, watchlist operations, report generation, consensus, attribution, hedges, and scenarios.
+### 2. Exact Decision Replay
+Reconstructs one immutable audited decision using exact historical component identities and inputs.
 
-## Institutional Intelligence Audit Notes
+### 3. Counterfactual Decision Replay
+Requires an exact replayable baseline, then changes explicitly allowlisted historical inputs and asks what the **same historical system** would have decided.
 
-- `tests/test_institutional_intelligence.py` now verifies route registration uniqueness, requested institutional endpoint availability, safe JSON response shapes, and fail-open behavior for missing providers/storage and empty datasets.
-- `frontend/assets/ui.js` institutional renderers now defensively default null inputs to empty objects and use safe report-copy payload attributes.
-- `backend/compute/backtester.py` now handles constant positive return streams as positive Sharpe instead of zero, matching portfolio-risk test expectations.
+All are research/audit paths and are separate from live submission.
+
+---
+
+# Earlier Product Layers Still Present
+
+## Equity + Execution Safety Expansion
+- yfinance/Stooq fail-open equity ingestion
+- equity analytics and tariff exposure
+- equity risk/tariff/sector agents
+- allocation execution preview
+- conditional paper orders
+- TWAP/VWAP smart-order planning
+- strategy performance
+- data-quality views
+- replay trade simulation
+- agent history/performance
+- Equities tab
+
+## Institutional Intelligence Layer
+- macro events / reaction estimates
+- macro sensitivity / tariff beta
+- cross-asset correlation/contagion
+- scenario builder
+- cross-asset hedge previews
+- explainability
+- agent consensus
+- signal attribution
+- watchlists
+- structured reports
 
 ## Geopolitical Risk Intelligence Layer
+- geopolitical risk index
+- sanctions/export-control research
+- conflict escalation
+- chokepoints/shipping risk
+- energy/commodity shock
+- cross-asset market impact
+- portfolio-protection proposals
+- geopolitical agents/reports
+- Geopolitics tab
 
-### Backend compute modules
-- `backend/compute/geopolitical_risk.py` — 0-100 Geopolitical Market Risk Index, component weighting, regional/asset breakdowns, provider status, and normalized event feed construction.
-- `backend/compute/sanctions_risk.py` — sanctions/export-control risk scoring, fallback entity feed, and market impact mapping.
-- `backend/compute/conflict_escalation.py` — conflict hotspot scoring, normalized escalation events, and conflict market-impact rows.
-- `backend/compute/shipping_energy_risk.py` — chokepoint/shipping risk, supply-chain impact, and energy/commodity shock scoring.
-- `backend/compute/geopolitical_market_impact.py` — cross-asset impact estimates for equities, ETFs, commodities, crypto, and stablecoins.
-- `backend/compute/portfolio_protection.py` — proposal-only portfolio protection status and preview protocol.
+These remain deterministic/proposal/research oriented and preserve degraded/fallback metadata when providers are unavailable.
 
-### Backend API routes
-- `backend/api/geopolitical_routes.py` — `/api/geopolitical/index`, `/events`, `/sanctions`, `/sanctions/impact`, `/sanctions/entities`, `/conflicts`, `/conflict/hotspots`, `/conflict/escalation`, `/conflict/market-impact`, `/chokepoints`, `/shipping-risk`, `/supply-chain-impact`, `/energy-shock`, `/commodity-impact`, `/market-impact`, `/scenario-templates`, `/scenario-run`, `/agents/signals`, `/reports/daily-brief`, and `/reports/protection-brief`.
-- `backend/api/protection_routes.py` — `/api/protection/status` and `/api/protection/preview`.
-- `main.py` registers both routers additively alongside existing institutional/equity routes.
+---
 
-### Agents
-- `backend/agents/geopolitical_agent.py`, `backend/agents/sanctions_agent.py`, `backend/agents/conflict_agent.py`, `backend/agents/energy_shock_agent.py`, and `backend/agents/protection_agent.py` emit deterministic proposal-only signals with affected assets/regions and data-quality fields.
-- `backend/api/agents_routes.py` includes the new agents in the existing signal and registry flow.
+# Tests (`tests/`)
 
-### Frontend
-- `frontend/index.html` adds a **Geopolitics** tab and panels for risk index, components, regional table, events, sanctions, conflict, shipping, energy, market impact, scenario builder, portfolio protection, agent signals, and reports.
-- `frontend/assets/api.js` adds fail-safe API wrappers for the geopolitical and protection endpoints.
-- `frontend/assets/ui.js` adds null-safe geopolitical renderers using existing card/table/badge patterns.
-- `frontend/assets/app.js` refreshes the Geopolitics tab and handles the geopolitical scenario form.
-- `frontend/assets/charts.js` adds a lightweight Chart.js component breakdown chart.
+Do not rely on the old fixed test-count statement. The suite now contains many focused files across hardening and product layers.
 
-### Tests
-- `tests/test_geopolitical_intelligence.py` covers index scoring, sanctions/conflict/shipping/energy engines, market impact, protection proposal safety, agent signal structure, endpoint response shapes, scenario output, fail-open payloads, and no autonomous trading.
+Important current suites include examples such as:
+- `test_execution_safety.py`
+- PositionLedger / paper-trading tests
+- `test_durable_order_lifecycle.py`
+- runtime / Redis reliability tests
+- `test_historical_backtester.py`
+- `test_frontend_alignment.py`
+- `test_heuristic_performance.py`
+- ingestion provenance/history tests
+- state-contract tests
+- `test_ml_governance.py`
+- `test_decision_audit.py`
+- `test_audit_governance_correctness.py`
+- `test_final_decision_boundary.py`
+- `test_risk_unification.py`
+- `test_operator_auth.py`
+- `test_production_readiness.py`
+- `test_counterfactual_replay.py`
+- equity/institutional/geopolitical intelligence tests
+
+Run:
+
+```bash
+pytest -q
+```
+
+For a current exact count without running tests:
+
+```bash
+pytest --collect-only -q
+```
+
+---
+
+# Current Non-Goals / Boundaries
+
+The current codebase intentionally does **not** imply that it has:
+- production-ready live Hyperliquid/Drift/Jupiter execution;
+- autonomous allocation/agent/ML trading;
+- mutable decision-audit rows;
+- hidden synthetic fallback for historical replay;
+- automatic ML promotion;
+- full user-account/OAuth infrastructure;
+- SQLAlchemy/asyncpg/Alembic;
+- Kubernetes/Docker orchestration as a requirement;
+- Kafka/Celery/RabbitMQ;
+- Prometheus/Grafana/OpenTelemetry as a required second observability stack;
+- GitHub Actions/YAML-based CI as part of the recent readiness work.
+
+The architecture is focused on **truthful research behavior, durable accounting, deterministic decision logic, explicit provenance, auditability, operational safety and paper-first execution**.
+
+---
+
+# Documentation Source of Truth
+
+- **`README.md`** — current project overview, architecture and phase.
+- **`Summary.md`** — plain-English system/product walkthrough.
+- **`codebase.md`** — technical file/module guide.
+- **`changelog.md`** — chronological evolution.
+
+For final implementation truth, the code and migrations on `main` remain authoritative.
