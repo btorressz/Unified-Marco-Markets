@@ -40,6 +40,23 @@ def _utc_age_seconds(ts: datetime) -> float:
     return max(0.0, (datetime.now(timezone.utc) - value.astimezone(timezone.utc)).total_seconds())
 
 
+def _parse_ts(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, (int, float)):
+            parsed = datetime.fromtimestamp(value, tz=timezone.utc)
+        else:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError, OSError):
+        return None
+
+
 def _database_check() -> dict[str, Any]:
     ok = check_connection()
     return _check("ok" if ok else "error", blocking_live=not ok)
@@ -70,9 +87,15 @@ def _redis_check() -> dict[str, Any]:
 
 
 def _market_data_check() -> dict[str, Any]:
-    price = PriceAuthority().get_price(_PRICE_SYMBOL)
-    age = _utc_age_seconds(price.ts) if price.found else None
-    fresh = bool(price.found and age is not None and age <= config.PRICE_FRESHNESS_THRESHOLD_S)
+    authority = PriceAuthority()
+    price = authority.get_price(_PRICE_SYMBOL)
+    raw_source = next(
+        (row for row in authority.get_all_venues(_PRICE_SYMBOL) if row.get("venue") == price.source),
+        {},
+    )
+    source_ts = _parse_ts(raw_source.get("ts"))
+    age = _utc_age_seconds(source_ts) if price.found and source_ts is not None else None
+    fresh = bool(price.found and source_ts is not None and age is not None and age <= config.PRICE_FRESHNESS_THRESHOLD_S)
 
     store = StateStore()
     integrity = store.get_snapshot(PRICE_INTEGRITY) or store.get_snapshot(PRICE_INTEGRITY_LEGACY_LATEST) or {}
@@ -84,6 +107,7 @@ def _market_data_check() -> dict[str, Any]:
         symbol=_PRICE_SYMBOL,
         source=price.source,
         price_found=price.found,
+        source_timestamp_present=source_ts is not None,
         age_seconds=round(age, 2) if age is not None else None,
         maximum_ready_age_seconds=config.PRICE_FRESHNESS_THRESHOLD_S,
         integrity_status=integrity_status,
@@ -99,15 +123,8 @@ def _ingestion_check() -> dict[str, Any]:
     for source in list_sources():
         snap = store.get_snapshot(source["snapshot_key"])
         ts_raw = (snap or {}).get("ts") if isinstance(snap, dict) else None
-        age = None
-        if ts_raw:
-            try:
-                ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
-                if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
-                age = max(0.0, (now - ts.astimezone(timezone.utc)).total_seconds())
-            except (TypeError, ValueError):
-                age = None
+        ts = _parse_ts(ts_raw)
+        age = max(0.0, (now - ts).total_seconds()) if ts is not None else None
         expected = max(1, int(source.get("expected_cadence_seconds") or 1))
         healthy = age is not None and age <= expected * 3
         if not healthy:
@@ -247,6 +264,8 @@ def _reason(name: str, result: dict[str, Any]) -> str:
     if name == "market_data":
         if not result.get("price_found"):
             return "No execution price is available"
+        if not result.get("source_timestamp_present"):
+            return "Execution price source has no authoritative timestamp"
         if result.get("integrity_status") != "OK":
             return f"Price integrity is {result.get('integrity_status', 'UNKNOWN')}"
         return "Execution price is stale"
