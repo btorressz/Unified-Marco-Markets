@@ -79,6 +79,16 @@ if EXECUTION_MODE not in ("paper", "live"):
 # official/native signing flows and integration-tested.
 LIVE_EXECUTION_ENABLED: bool = _env_bool("LIVE_EXECUTION_ENABLED", False)
 
+# Minimal operator-access boundary. Paper/local development remains backward
+# compatible by default, while any live-capable configuration forces auth on in
+# backend.core.operator_auth regardless of this flag.
+OPERATOR_API_TOKEN: str = _env("OPERATOR_API_TOKEN", "")
+OPERATOR_AUTH_REQUIRED: bool = _env_bool("OPERATOR_AUTH_REQUIRED", False)
+
+# Direct Jupiter execution is a separate spot-swap surface and must remain
+# explicitly disabled until its own production-grade signing/risk path exists.
+ENABLE_DIRECT_JUPITER_SWAP: bool = _env_bool("ENABLE_DIRECT_JUPITER_SWAP", False)
+
 SUPPORTED_EXECUTION_VENUES: list[str] = [
     venue.lower()
     for venue in _env_list(
@@ -133,6 +143,7 @@ def is_feature_enabled(key: str) -> bool:
 
 
 def summary() -> dict:
+    effective_operator_auth = bool(OPERATOR_AUTH_REQUIRED or EXECUTION_MODE == "live" or LIVE_EXECUTION_ENABLED)
     return {
         "database_configured": bool(DATABASE_URL),
         "redis_url": REDIS_URL,
@@ -144,6 +155,9 @@ def summary() -> dict:
         "redis_lease_ttl_s": REDIS_LEASE_TTL_S,
         "execution_mode": EXECUTION_MODE,
         "live_execution_enabled": LIVE_EXECUTION_ENABLED,
+        "operator_auth_required": effective_operator_auth,
+        "operator_token_configured": bool(OPERATOR_API_TOKEN),
+        "direct_jupiter_swap_enabled": ENABLE_DIRECT_JUPITER_SWAP,
         "supported_execution_venues": SUPPORTED_EXECUTION_VENUES,
         "supported_execution_markets": SUPPORTED_EXECUTION_MARKETS,
         "supported_order_types": SUPPORTED_ORDER_TYPES,
