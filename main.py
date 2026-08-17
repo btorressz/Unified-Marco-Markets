@@ -12,6 +12,7 @@ def create_app():
     from fastapi import FastAPI
     from fastapi.staticfiles import StaticFiles
     from fastapi.responses import HTMLResponse
+    from backend.core.operator_auth import enforce_operator_request
 
     @asynccontextmanager
     async def lifespan(application):
@@ -49,6 +50,7 @@ def create_app():
             close_pool()
 
     app = FastAPI(title="Tariff Risk Desk", version="0.1.0", lifespan=lifespan)
+    app.middleware("http")(enforce_operator_request)
 
     frontend_dir = Path(__file__).parent / "frontend"
     app.mount("/frontend", StaticFiles(directory=str(frontend_dir)), name="frontend")
