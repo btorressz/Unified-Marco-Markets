@@ -2,232 +2,530 @@
 
 ## What Is This?
 
-The Tariff Risk Desk is a real-time trading intelligence dashboard that watches global trade policy (tariffs, geopolitical news) and connects it to cryptocurrency markets. It helps a trader understand how macro events like tariff announcements or political tensions might affect crypto prices, and gives them tools to manage risk, spot opportunities, and execute trades safely.
+The Tariff Risk Desk is a real-time macro-to-markets research and risk-management dashboard that watches global trade policy, geopolitical events, market structure, stablecoins, equities, and crypto markets and connects those signals to deterministic portfolio, risk, and execution decisions.
 
-Think of it as a command center that sits between "what's happening in the world" and "what should I do with my portfolio."
+It began as a system for answering a simple question — **“How could tariffs and geopolitical pressure affect markets?”** — and has grown into a broader institutional-style research desk with historical replay, governed machine learning, durable execution accounting, immutable decision auditing, operator safety controls, production-readiness checks, and counterfactual “what-if” analysis.
+
+Think of it as a command center that sits between **“what is happening in the world?”**, **“what is happening in markets?”**, and **“what would the desk do under these conditions?”**
+
+The project is still for research and development. Paper mode is the default. Intelligence, allocation, hedging, scenario, and counterfactual outputs are proposal/research tools rather than autonomous trading instructions.
 
 ---
 
 ## How It Works, Step by Step
 
-### 1. Data Collection (The Inputs)
+### 1. Data Collection — The Inputs
 
-The system constantly pulls data from multiple sources, running on automatic timers:
+The system continuously collects and normalizes data from multiple sources:
 
-- **World Bank WITS**: Real tariff rate data between countries. This is the core macro signal — when tariffs go up between major trading partners, markets tend to react.
-- **GDELT**: A global news monitoring system. The app reads news tone and volume to detect "shock events" — sudden spikes in negative geopolitical coverage.
-- **Pyth Network**: A blockchain-based price oracle. This is the primary, most trusted source for crypto prices (SOL, BTC, ETH).
-- **Kraken**: A major crypto exchange. Used as a secondary price source.
-- **CoinGecko**: A crypto data aggregator. Used as a fallback if the other two price sources are unavailable.
-- **Hyperliquid**: A decentralized perpetual futures exchange. The app pulls orderbook data, funding rates, and market microstructure from here.
-- **Drift Protocol**: Another decentralized perp exchange on Solana. Used for cross-venue comparison and funding rate arbitrage detection.
+- **World Bank WITS** — tariff rates and trade-policy inputs.
+- **GDELT** — global news tone/volume and geopolitical shock signals.
+- **Pyth Network** — primary crypto oracle data.
+- **Kraken** — spot-market price source and price-authority fallback.
+- **CoinGecko** — additional price fallback.
+- **Hyperliquid** — perpetual-market data and market microstructure.
+- **Drift Protocol** — Solana perpetual-market and funding data.
+- **yfinance / Stooq** — research-grade equity data with deterministic degraded/demo fallbacks when providers are unavailable.
 
-If any of these sources go down or return errors, the system keeps running — it never crashes due to a missing data feed. This is called "fail-open" design.
+The ingestion layer no longer treats these merely as anonymous snapshots. It now has a **Source Registry**, durable **ingest-run history**, and **data provenance** records that describe which provider/run produced data, provider timestamps, record counts, fallback usage, and failure state.
 
-### 2. The Tariff Pressure Index (The Core Signal)
+Redis leases coordinate scheduled ingestion when Redis is healthy so multiple workers do not duplicate the same job. Research ingestion remains fail-soft: provider failures are surfaced as degraded/unavailable rather than crashing the entire application.
 
-The app computes a single number from 0 to 100 called the Tariff Pressure Index. This combines:
+### 2. Canonical State & Data Contracts
 
-- Current tariff rates from WITS data
-- News shock scores from GDELT
-- Rate of change (is pressure increasing or decreasing?)
-- Country-specific weights (tariffs involving larger trading partners matter more)
+Provider-native data is preserved, but important shared state also has canonical identities so consumers do not silently disagree about symbols or key names.
 
-When this index spikes, it means trade policy tension is rising, which historically correlates with crypto market volatility. The dashboard shows this index on a chart with selectable timeframes (1 hour, 4 hours, 1 day, 7 days).
+Examples include:
 
-### 3. Market Monitoring (What Are Prices Doing?)
+- normalized Pyth/Kraken/CoinGecko price aliases;
+- canonical WITS tariff aggregate state;
+- stablecoin-health state;
+- macro prediction state;
+- price-integrity state.
 
-The Markets tab shows:
+Price integrity is intentionally truthful: `OK` requires actual cross-source validation. If there are not enough usable sources, integrity can be `UNKNOWN` rather than pretending everything is healthy.
 
-- **Live prices** from all connected venues, with the source and confidence level
-- **Funding rates** — the periodic payments between long and short traders on perpetual futures. These indicate market sentiment.
-- **Carry scores** — how much you'd earn (or pay) annually just by holding a position, based on funding rates
-- **Microstructure** — orderbook imbalance (are there more buyers or sellers?), bid-ask spread, and market depth
-- **Price integrity checks** — the system cross-checks prices across venues. If Pyth says SOL is $150 but Kraken says $145, something is wrong and the system flags it.
-- **Solana execution quality** — RPC latency, congestion detection, and route analysis for Solana-based trades
-- **Feed status** — a collapsible panel showing every data source, whether it's healthy, how old its data is, and which source is currently authoritative
+### 3. Tariff Pressure & Macro Signals
 
-### 4. Divergence Detection (Spotting Mismatches)
+The desk computes tariff- and shock-oriented macro signals using WITS and GDELT inputs. The Index area presents:
 
-The Divergence tab monitors price differences between venues. If SOL is trading at $150.00 on Hyperliquid but $149.50 on Drift, that's a 50-cent spread. The system:
+- tariff pressure/index levels;
+- shock score;
+- rate of change;
+- historical views;
+- macro-event timelines;
+- WITS series and country weighting;
+- prediction and market-reaction context.
 
-- Tracks these spreads in real-time
-- Alerts when spreads exceed normal thresholds
-- Flags "dislocations" — large, sudden price gaps that might indicate a trading opportunity or a broken feed
+The goal is not to assert that tariffs mechanically determine asset prices. The system makes the inputs, timestamps, drivers, and confidence visible so the user can interpret how macro pressure is feeding into deterministic research rules.
 
-### 5. Stablecoin Monitoring (Is the Dollar Peg Holding?)
+### 4. Market Monitoring
 
-Stablecoins (USDC, USDT, DAI) are supposed to be worth exactly $1.00. The Stablecoins tab watches:
+The Markets layer shows and analyzes:
 
-- **Peg status** — current price and deviation in basis points (1 bp = 0.01%)
-- **Depeg heatmap** — a visual showing which stablecoins are closest to breaking their peg
-- **Stress and peg-break probability** — estimated likelihood of a stablecoin losing its peg based on current conditions
-- **Flow momentum** — tracking whether money is flowing into or out of stablecoins (a "risk-off" signal when money flows in, "risk-on" when it flows out)
-- **Stablecoin playbook** — automated response recommendations if a depeg event occurs (e.g., "rotate from USDT to USDC if USDT depeg exceeds 50 bps")
+- multi-source crypto prices;
+- funding rates;
+- carry scores;
+- order-book imbalance and liquidity depth;
+- bid/ask spread and basis;
+- cross-venue price integrity;
+- Solana execution quality;
+- funding-arbitrage and basis opportunities;
+- feed/source status.
 
-### 6. Strategy Engine (What Should I Do?)
+The price-authority path uses the existing Pyth → Kraken → CoinGecko cascade for supported execution prices while retaining source attribution and freshness.
 
-The Strategy tab runs five configurable trading rules that evaluate current conditions and propose actions:
+### 5. Divergence Detection
 
-- **Tariff shock rule** — if the tariff index spikes, suggest opening a short or reducing exposure
-- **Funding rate rule** — if funding is extremely positive, suggest shorting (the market is overleveraged long)
-- **Divergence rule** — if venue prices diverge significantly, suggest an arbitrage trade
-- **Volatility regime rule** — adjust position sizing based on whether we're in a low-vol or high-vol environment
-- **Stable rotation rule** — if stablecoin health deteriorates, suggest rotating into safer stables
+The Divergence layer monitors cross-venue price differences and dislocations. It provides spread calculations and alerts when the same market is behaving materially differently across sources/venues.
 
-Each rule produces a specific action: open long, open short, reduce position, or rotate to stablecoins. The system also shows:
+This is used as research and execution-quality context rather than as an autonomous arbitrage engine.
 
-- **Adaptive risk weights** — the relative importance of each signal adjusts automatically based on the current market regime
-- **Portfolio proposals** — suggested allocations across assets using methods like risk parity, mean-variance optimization, or Kelly criterion. These are proposals only — the system never auto-trades.
+### 6. Stablecoin Monitoring
 
-### 7. Strategy Sandbox
+The Stablecoins layer watches peg health and liquidity conditions, including:
 
-A comparison tool that lets you test two different strategy configurations against the same market conditions side by side. You can tweak rule thresholds, risk limits, or allocation methods and see how the outputs differ without risking real money.
+- USDC/USDT/DAI-style peg status;
+- basis-point deviation;
+- stress/depeg indicators;
+- peg-break probability;
+- stablecoin flow momentum;
+- risk-on/risk-off interpretation;
+- deterministic playbook/protection suggestions.
 
-### 8. Replay Engine
+Stablecoin health is also consumed by ML, allocation, volatility, geopolitical, and portfolio-protection research paths.
 
-Takes historical events from the event log and replays them through the strategy engine. This lets you ask "what would my strategy have done during last week's tariff shock?" and see the simulated trades and outcomes.
+### 7. Deterministic Strategy / Heuristic Engine
 
-### 9. Execution (Placing Trades)
+The rules engine contains versioned deterministic heuristics. Rules have stable IDs and versions so historical research can evaluate the **same rule version** that existed at decision time instead of silently falling forward to new logic.
 
-The Execution tab is where trades actually happen. It includes:
+Current heuristic families include tariff/volatility reduction, shock throttling, divergence/funding hedging, negative-carry reduction, and stablecoin rotation behavior.
 
-- **Decision Data Status panel** — before you trade, this shows whether your data is fresh and reliable. It checks: Is the tariff index recent? Are prices current? Is price integrity OK? If data is stale or degraded, it warns you.
-- **Paper trading** — by default, all trades are simulated. You can submit orders (buy/sell, any venue, any market, any size) and they execute in a virtual environment with position tracking and fill simulation.
-- **Live execution** (optional) — if you set EXECUTION_MODE=live and provide API keys, the system can route real orders to Hyperliquid, Drift, or Jupiter (Solana swap aggregator). This is disabled by default for safety.
-- **Position tracking** — shows all open positions with venue, market, side, size, entry price, and timestamp
-- **PnL attribution** — breaks down profit and loss by position
-- **Execution Quality Index (EQI)** — a score from 0-100 measuring how well trades are being executed, including latency percentiles (p50, p95), average slippage in basis points, and fill counts
+Rules remain deterministic and explainable: when a rule fires, the output includes the rule identity/version, proposed action, reason, and historical decision timestamp when replayed.
 
-### 10. Slippage Model
+### 8. Heuristic Performance Lab
 
-Estimates how much slippage (price movement against you) to expect for a given order size on each venue. It considers orderbook depth, spread, volatility, and recent slippage history to compute maximum safe order sizes — the largest trade you can make without excessive slippage.
+The Strategy area includes a Historical Heuristic Performance Lab. It evaluates versioned heuristics against persisted event-time data and can measure:
 
-### 11. Risk Management (How Exposed Am I?)
+- directional/classification performance;
+- horizon outcomes;
+- regime segmentation;
+- decay over time;
+- calibration/Brier-style statistics where applicable;
+- historical evidence/sample counts.
 
-The Risk tab provides:
+The performance layer does not invent outcomes when realized history is missing. Missing history is reported as unavailable/unevaluated rather than fabricated performance.
 
-- **Throttle system** — if risk limits are breached (too much leverage, too much margin used, too large daily loss), the system activates a throttle that blocks new trades until conditions normalize
-- **Guardrails** — configurable limits for max leverage, max margin usage, max daily loss, and cooldown periods
-- **Stress tests** — run four predefined scenarios (tariff shock, liquidity crisis, flash crash, funding flip) against your current positions to see estimated P&L impact, max drawdown, and whether you'd face a margin call
-- **Monte Carlo simulation** — runs thousands of random price paths (up to 10,000) to estimate Value at Risk (VaR) and Conditional Value at Risk (CVaR) at the 95% confidence level. You can set the time horizon in minutes, hours, or days. Results include a distribution chart.
-- **Regime replay** — looks at past market regimes similar to the current one and shows what returns looked like historically (average 4-hour return, 24-hour return, win rate)
-- **Liquidation heatmap** — a grid showing liquidation probability for different combinations of leverage (2x to 10x) and price drops (5% to 30%). Color-coded from green (safe) to red (likely liquidation).
-- **Hedge ratio analysis** — computes rolling correlations between assets and suggests optimal hedge ratios to minimize portfolio risk
+### 9. ML Reliability & Model Governance
 
-### 12. AI Agents (Automated Analysts)
+The ML layer has evolved beyond an in-memory training experiment.
 
-Seven heuristic (rule-based, not machine learning) agents continuously evaluate market conditions and emit signals:
+It now includes:
 
-1. **Risk Agent** — monitors position sizing, leverage, and portfolio risk. Proposes reducing positions or blocking execution when risk is elevated.
-2. **Macro Agent** — evaluates the tariff index, shock scores, and macro regime. Flags when macro conditions are deteriorating.
-3. **Execution Agent** — tracks execution quality, slippage trends, and fill metrics. Warns when execution conditions are poor.
-4. **Liquidity Agent** — monitors stablecoin health, depeg risk, and overall liquidity conditions. Alerts on liquidity deterioration.
-5. **Hyperliquid Agent** — analyzes Hyperliquid-specific orderbook microstructure, spread width, and depth. Detects thin liquidity or unusual orderbook patterns.
-6. **Jupiter Agent** — monitors Jupiter/Solana swap conditions: quote freshness, route complexity (how many hops a swap takes), price impact, slippage risk, and Solana network congestion.
-7. **Hedging Agent** — position-aware agent that recommends hedge adjustments based on shock levels, volatility, funding rates, and margin usage.
+- a versioned 15-feature schema;
+- per-feature provenance (`observed`, `derived`, `fallback`, `default`);
+- deterministic dataset manifests and SHA-256 identities;
+- strict timestamp ordering and label-definition versioning;
+- temporal walk-forward validation using sklearn pipelines;
+- durable training-run and candidate-model records;
+- immutable model versions;
+- serialized artifact SHA-256 verification;
+- explicit promote and rollback operations;
+- restart-safe active-model loading;
+- persisted prediction provenance and input hashes;
+- heuristic fallback when a governed model is unavailable or invalid.
 
-Each agent signal includes:
-- Severity (low/medium/high)
-- Direction (bullish/bearish/neutral)
-- Confidence score (0-100%)
-- Proposed action (e.g., "reduce_size", "block_execution", "hedge")
-- Detailed reasoning (expandable in the UI)
-- Timestamps for both the signal and the data it was based on
+Training does **not** automatically promote a model, and model lifecycle changes are operator actions. Historical decision replay requires the exact historical model/version/artifact when ML was part of the decision.
 
-### 13. Funding Arbitrage Detection
+### 10. Capital Allocation & Portfolio Proposals
 
-Compares funding rates between Hyperliquid and Drift. When one venue pays significantly more than the other, it flags an arbitrage opportunity — you could go long on the venue with negative funding (they pay you) and short on the venue with positive funding (you collect both sides).
+The allocator produces proposal-only weights across:
 
-### 14. Basis Monitor
+- Hyperliquid;
+- Drift;
+- Jupiter Spot;
+- stablecoins;
+- cash.
 
-Tracks the "basis" — the difference between perpetual futures prices and spot prices. A large positive basis means futures are trading at a premium to spot, which represents a carry trade opportunity. The system computes annualized basis in basis points and net carry (basis minus funding costs), and flags when conditions are feasible for a basis trade.
+It considers signals such as volatility regime, tariff shock, stablecoin health, funding opportunity, basis opportunity, execution quality, prediction confidence, and portfolio state.
+
+Allocation output can feed a pre-trade sizing preview that compares a proposed order against target allocation, venue/asset caps, portfolio risk room, cash, and existing exposure. These are proposals — the allocator does not autonomously submit orders.
+
+### 11. Historical Backtesting
+
+The Backtest Lab now has two explicit modes:
+
+#### Synthetic Research
+The original deterministic seeded simulation remains available for research/demo compatibility.
+
+#### Historical Event-Time
+Historical mode consumes persisted observations and does **not** silently fall back to synthetic prices when history is missing. It can use market ticks, funding ticks, index history, stablecoin/regime observations, durable orders, and fills.
+
+Historical replay enforces event-time ordering and avoids same-observation look-ahead. It supports:
+
+- latency assumptions;
+- maker/taker fees;
+- slippage;
+- full/fixed-partial fill assumptions;
+- signed funding;
+- PositionLedger accounting;
+- realized/unrealized P&L;
+- equity curves;
+- Sharpe/drawdown/VaR/CVaR;
+- optional walk-forward windows;
+- durable backtest run metadata and data manifests.
+
+### 12. PositionLedger & Durable Accounting
+
+Paper execution uses a reusable `PositionLedger` for symmetric long/short accounting.
+
+It handles:
+
+- opening positions;
+- partial reductions while preserving average entry;
+- full closes;
+- long↔short flips;
+- gross/net realized P&L;
+- mark-to-market unrealized P&L;
+- fees;
+- signed funding;
+- slippage.
+
+Historical replay reuses the same accounting boundary instead of maintaining separate incompatible P&L math.
+
+### 13. Durable Order Lifecycle
+
+Execution persistence is no longer centered only on a legacy `paper_trades` record.
+
+The durable lifecycle includes normalized concepts such as:
+
+- order intents;
+- orders;
+- order events;
+- fills;
+- paper orders;
+- conditional orders;
+- triggered/OCO state.
+
+A submitted/acknowledged response is not automatically treated as a fill. Uncertain live-submission states can be marked as requiring reconciliation instead of being replaced with fake paper fills.
+
+Conditional orders are durable and use atomic PostgreSQL trigger claims to reduce duplicate-worker execution risk.
+
+### 14. Shared Redis Runtime & Risk State
+
+Redis now has one shared process-level runtime boundary with bounded sync/async pools, health/reconnect telemetry, optional key prefixes, pub/sub helpers, idempotency helpers, and lease support.
+
+PostgreSQL remains the durable source of truth for orders/fills/decisions. Redis is used for low-latency runtime state such as:
+
+- snapshots;
+- pub/sub/WebSocket fanout;
+- execution idempotency;
+- ingest leases;
+- shared risk throttle;
+- shared daily realized P&L;
+- shared live cooldown state.
+
+Paper/research behavior can degrade to local/process fallback where appropriate. Live new exposure has stricter fail-closed requirements.
+
+### 15. Risk Management
+
+The RiskEngine evaluates portfolio/account state rather than only simplistic position lists. It can calculate:
+
+- gross and net leverage;
+- margin utilization;
+- asset/venue/strategy concentration;
+- liquidation buffer;
+- projected leverage after a proposed action;
+- projected margin usage;
+- daily-loss constraints;
+- shared throttle/cooldown state.
+
+The system preserves a key safety property: a confirmed **pure risk reduction** can escape many new-exposure constraints so infrastructure/risk throttles do not unnecessarily trap an existing position.
+
+The Risk tab also includes portfolio VaR/CVaR, stress tests, Monte Carlo research, volatility regimes, liquidation views, regime analogs and hedge/protection proposals.
+
+### 16. Final Pre-Trade Decision Boundary
+
+A major current architecture boundary is the deterministic pre-trade decision flow:
+
+```text
+Execution Request
+      ↓
+Data / Price Guardrails
+      ↓
+Historical/Current Risk Evaluation
+      ↓
+Execution-Agent Evaluation
+      ↓
+Deterministic ALLOW / BLOCK
+      ↓
+Immutable Final Decision Audit
+      ↓
+If allowed: submission
+```
+
+The final decision is produced by a pure combiner shared with replay. It is not copied from a stored target.
+
+An allowed API-linked live order cannot bypass the final immutable audit persistence requirement for new exposure.
+
+### 17. Immutable Decision Audit Ledger
+
+The system maintains an append-only `decision_audit` ledger.
+
+The original execution admission record is retained as an **admission intent**. After the real pre-trade data/risk/execution-agent checks, the router appends a separate immutable `execution_pre_trade_final` record before submission.
+
+Decision records can include:
+
+- input state;
+- input provenance;
+- derived state;
+- heuristic result;
+- ML result;
+- risk result;
+- allocation result;
+- execution intent;
+- component versions;
+- configuration snapshot;
+- final decision;
+- canonical SHA-256 decision hash.
+
+### 18. Exact Decision Replay
+
+`POST /api/decisions/{decision_id}/replay` reconstructs a historical decision from the immutable audit record.
+
+Replay can recompute:
+
+- exact heuristic versions;
+- exact governed ML artifacts;
+- historical risk with an inert/no-Redis runtime;
+- allocation using the original decision timestamp;
+- execution data/agent checks;
+- the deterministic final ALLOW/BLOCK decision.
+
+Results are explicitly one of:
+
+- `EXACT MATCH`;
+- `MISMATCH` with structured field differences;
+- `UNAVAILABLE` when the exact historical requirements do not exist.
+
+Replay is audit-only and submits zero orders.
+
+### 19. Counterfactual Decision Replay
+
+Counterfactual replay extends **“What DID the desk decide?”** into **“What WOULD the same historical system have decided if specific inputs had been different?”**
+
+Before a counterfactual can run, the original decision must reproduce as an exact baseline. The system then deep-copies historical replay inputs and applies only explicit semantic overrides.
+
+Examples include:
+
+- higher/lower shock score;
+- different volatility regime;
+- lower stablecoin health;
+- wider execution spread;
+- thinner liquidity;
+- different fill price/order size;
+- different historical daily P&L;
+- different historical throttle state.
+
+Mappings are explicit. Similar-sounding but different variables are not silently treated as the same thing. Components recorded as `not_used` stay `not_used`.
+
+Counterfactual output shows original vs what-if components and whether the final decision changed. It is research-only: it writes no audit row, changes no model, reads no current live Redis state, and submits no order.
+
+### 20. Operator Authorization
+
+State-changing external surfaces can require a small operator bearer token:
+
+```text
+Authorization: Bearer <operator-token>
+```
+
+The system intentionally does not introduce a full user-account/OAuth platform yet.
+
+Protected surfaces include order/conditional/smart-order mutations, ML training/promotion/rollback, manual decision writes, persisted heuristic evaluation, backtests, and watchlist mutations.
+
+Any live-capable configuration forces operator authorization even if the explicit paper-mode auth flag was left disabled. If auth is required but no server token is configured, protected mutations fail closed.
+
+The browser stores an operator token in `sessionStorage` only and attaches it only to protected mutations.
+
+### 21. Jupiter / Solana Safety
+
+Jupiter remains a separate spot-swap research integration. It is not forced through the perp-oriented execution router.
+
+Direct Jupiter execution defaults to disabled:
+
+```text
+ENABLE_DIRECT_JUPITER_SWAP=false
+```
+
+The current Jupiter/Solana execution integration remains prototype-only and must not be interpreted as production-ready live execution.
+
+### 22. Liveness vs Production Readiness
+
+The application now distinguishes **process health** from **safe operational readiness**.
+
+- `GET /live` / `/api/health/live` — is the API process responsive?
+- `GET /ready` / `/api/health/ready` — is the configured instance ready for its intended mode?
+
+Readiness checks include:
+
+- PostgreSQL connectivity;
+- required execution/audit schema;
+- Redis/shared risk state;
+- market-price availability/freshness;
+- price integrity;
+- ingestion visibility;
+- risk-policy sanity;
+- operator-auth configuration;
+- execution-mode configuration;
+- production-ready executor availability.
+
+Paper/research mode can remain usable while degraded. Live-capable mode reports `NOT READY` when critical live dependencies are missing. The current live venue adapters are still prototype-only, so readiness truthfully does not claim production live-execution capability today.
+
+### 23. Equities Research Layer
+
+The desk includes a stock-market research view focused on tariff-sensitive equities and ETFs.
+
+It can analyze broad indices/ETFs, sector ETFs, semiconductor/defense/retail/China/EM exposure, and tariff-sensitive companies. Research analytics include returns, volatility, drawdown, moving averages, RSI, beta proxy, relative strength, volume changes, sector labels and provider state.
+
+Equity agents provide deterministic tariff/risk/sector-rotation signals. Provider failures degrade safely rather than crashing the application.
+
+### 24. Institutional Intelligence Layer
+
+The institutional layer connects macro/trade events to multi-asset reactions. It includes:
+
+- macro event calendar and reaction estimates;
+- tariff beta / macro sensitivity;
+- cross-asset correlations and contagion paths;
+- proposal-only scenario builder;
+- cross-asset hedging;
+- portfolio/recommendation explainability;
+- agent consensus;
+- signal outcome attribution;
+- custom watchlists;
+- structured JSON risk reports.
+
+### 25. Geopolitical Risk Intelligence
+
+The Geopolitics workflow extends the desk into:
+
+- sanctions and export controls;
+- conflict escalation;
+- shipping chokepoints;
+- supply-chain pressure;
+- energy/commodity shocks;
+- cross-asset geopolitical market impact;
+- proposal-only portfolio protection.
+
+A 0–100 Geopolitical Market Risk Index summarizes current conditions with drivers, affected regions/assets, provider state, confidence and data-quality information.
+
+Geopolitical and sanctions outputs are research aids, not legal, financial or investment advice.
+
+### 26. AI / Heuristic Agents
+
+The original deterministic agent system remains part of the desk, and the broader platform now includes additional equity/geopolitical/protection agents alongside the earlier risk, macro, execution, liquidity, Hyperliquid, Jupiter and hedging agents.
+
+Agent outputs remain structured and explainable, with fields such as confidence, severity, direction, proposed action, reasoning and data timestamps. Missing realized outcomes remain unevaluated rather than being synthesized.
 
 ---
 
 ## The Dashboard
 
-The frontend is a single-page application with 8 tabs:
+The frontend remains a single-page vanilla HTML/CSS/JavaScript application with Chart.js. Current top-level tabs include:
 
-1. **Index** — Tariff Pressure Index, Shock Score, prediction, macro terminal
-2. **Markets** — Live prices, funding, carry, microstructure, Solana quality, funding arb, basis monitor, feed status
-3. **Divergence** — Cross-venue spread tracking and alerts
-4. **Stablecoins** — Peg monitor, depeg heatmap, stress probability, flow momentum
-5. **Strategy** — Rule signals, adaptive weights, portfolio proposals
-6. **Execution** — Data quality check, order form, positions, PnL, execution quality
-7. **Risk** — Throttle status, guardrails, stress tests, Monte Carlo, regime replay, liquidation heatmap
-8. **Agents** — All 7 agent signals with confidence badges and expandable reasoning
+1. **Index** — Tariff Pressure Index, shock, prediction, macro events and Macro Terminal.
+2. **Markets** — Prices, funding, carry, microstructure, Solana quality, funding arb, basis and feed status.
+3. **Divergence** — Cross-venue spreads and alerts.
+4. **Stablecoins** — Peg/stress monitoring and stable-flow intelligence.
+5. **Strategy** — Rules, Heuristic Performance Lab, allocation, ML governance, strategy performance and Backtest Lab.
+6. **Execution** — Order entry, safety status, lifecycle, positions, accounting, conditional and smart paper-order tools.
+7. **Equities** — Equity overview, tariff exposure, sector/macro sensitivity, cross-asset research and watchlists.
+8. **Geopolitics** — Geopolitical risk, sanctions, conflicts, shipping/energy shocks, scenarios, protection and reports.
+9. **Risk** — Shared risk state, portfolio risk, stress/Monte Carlo, volatility regime, liquidation and hedging/protection context.
+10. **Agents** — Agent registry/signals, consensus, history/performance and attribution.
+11. **Decision Audit** — Immutable decision detail, exact replay and Counterfactual Decision Replay.
 
-An always-visible **Event Timeline** at the bottom shows the last 50 events color-coded by type: green for fills, red for errors, yellow for alerts, blue for info, purple for agent signals.
+An event timeline and live WebSocket delivery remain part of the desk experience.
 
 ### UI Features
 
-- **Dark/Light theme** — toggle in the header, persists across browser refreshes
-- **Auto-refresh** — data polls every 5 seconds, with a toggle to pause
-- **WebSocket live feed** — primary updates come through a real-time WebSocket connection, with automatic reconnection and exponential backoff
-- **Freshness badges** — each panel shows whether its data is LIVE (under 10 seconds old), FRESH (under 60 seconds), STALE (over 60 seconds), or DEGRADED
-- **Performance optimizations** — polling pauses when the browser tab is hidden, WebSocket messages are batched every 200ms to prevent UI thrashing
+- Dark/light theme.
+- Auto-refresh controls.
+- WebSocket live updates with reconnect behavior.
+- REST refreshes using `Promise.allSettled` so partial provider failures do not blank an entire tab.
+- Freshness/degraded badges.
+- Historical backtest controls.
+- Operator-access UI using session-only token storage.
+- Decision Audit replay and counterfactual panels explicitly labeled research/audit only.
 
 ---
 
 ## Technical Architecture
 
-- **Backend**: Python with FastAPI, running on port 5000
-- **Frontend**: Plain HTML, CSS, and JavaScript (no React or framework). Charts use Chart.js.
-- **Database**: PostgreSQL with 8 tables for events, trades, positions, regime snapshots, and stablecoin data
-- **Cache**: Redis for real-time state snapshots, throttling, and pub/sub event distribution
-- **22 API route modules** serving data to the frontend
-- **27 computation modules** for all analytics (index calculation, divergence detection, Monte Carlo, portfolio optimization, etc.)
-- **7 AI agents** running as heuristic evaluators
-- **6 data ingest jobs** running on scheduled timers (every 30 seconds to every 6 hours depending on the source)
+- **Backend:** Python + FastAPI.
+- **Frontend:** vanilla HTML/CSS/JavaScript + Chart.js; no React.
+- **Durable storage:** PostgreSQL through the existing psycopg2 repository/helper pattern and `migrations.sql`.
+- **Realtime/coordination:** Redis for snapshots, idempotency, leases, risk runtime state, pub/sub and WebSocket fanout.
+- **Ingestion:** APScheduler plus explicit source/provenance tracking.
+- **Execution:** paper-first ExecutionRouter, durable order/fill lifecycle, PositionLedger, shared RiskEngine, final-decision audit.
+- **ML:** versioned features/datasets, temporal candidate training, immutable model registry, explicit promotion/rollback, exact artifact replay.
+- **Audit/research:** exact decision replay plus research-only counterfactual replay.
+
+The repository intentionally does not require SQLAlchemy, asyncpg, Alembic, Kubernetes, Kafka, Celery, or a separate observability stack for the current architecture.
 
 ### Safety Design
 
-- **Paper mode by default** — no real money is at risk unless you explicitly enable live trading
-- **Fail-open architecture** — missing API keys, unavailable data sources, or computation errors disable individual features but never crash the system
-- **Risk guardrails** — hard limits on leverage, margin, and daily loss that block trading when breached
-- **Data quality warnings** — the system tells you when data is stale before you trade on it
-- **Portfolio proposals only** — the optimizer suggests allocations but never executes automatically
+- Paper mode by default.
+- Independent `LIVE_EXECUTION_ENABLED` gate.
+- Prototype live adapters remain non-production-ready.
+- Operator authorization on state-changing surfaces when required.
+- Redis idempotency and durable intent required for API-linked live new exposure.
+- Pure reductions retain carefully scoped degraded-mode escape behavior.
+- Price freshness/integrity guardrails.
+- Shared portfolio-aware risk state.
+- Immutable final pre-trade decision audit before allowed submission.
+- Direct Jupiter swaps independently disabled by default.
+- `/ready` refuses to label unsafe live configuration as ready.
+- Replay and counterfactual paths are unable to submit orders.
 
 ---
 
 ## Environment and Configuration
 
-The app runs with a single command (`python main.py`) which starts the web server, connects to the database, launches Redis, and begins all data ingestion jobs. Configuration is through environment variables — the only required one is `DATABASE_URL` (automatically set by Replit). All others have safe defaults.
+The application can be started with `python main.py`. PostgreSQL and Redis are external runtime dependencies configured through environment variables rather than processes owned by the application.
 
-Key optional settings:
-- `EXECUTION_MODE` — "paper" (default) or "live"
-- `REDIS_URL` — defaults to localhost
-- `HYPERLIQUID_API_KEY`, `SOLANA_PRIVATE_KEY`, `SOLANA_RPC_URL` — only needed for live execution
-- `MAX_LEVERAGE`, `MAX_MARGIN_USAGE`, `MAX_DAILY_LOSS` — risk limit overrides
+Important settings include:
 
-The system has 77 automated tests covering index calculation, shock detection, divergence alerts, risk throttling, basis engine, funding arbitrage, stable flow, adaptive weights, portfolio optimization, liquidation heatmap, execution metrics, and Solana liquidity scoring.
-The system has 77 automated tests covering index calculation, shock detection, divergence alerts, risk throttling, basis engine, funding arbitrage, stable flow, adaptive weights, portfolio optimization, liquidation heatmap, execution metrics, and Solana liquidity scoring.
+- `DATABASE_URL`
+- `REDIS_URL`, pool/timeouts/key-prefix/lease settings
+- `EXECUTION_MODE` — `paper` by default
+- `LIVE_EXECUTION_ENABLED` — independent live gate, default false
+- `OPERATOR_API_TOKEN`
+- `OPERATOR_AUTH_REQUIRED`
+- `ENABLE_DIRECT_JUPITER_SWAP` — default false
+- supported execution venues/markets/order types
+- `MAX_ORDER_NOTIONAL`, `MAX_ORDER_SLIPPAGE_BPS`
+- `MAX_LEVERAGE`, `MAX_MARGIN_USAGE`, `MAX_DAILY_LOSS`, `COOLDOWN_SECONDS`
+- `PRICE_FRESHNESS_THRESHOLD_S`, `PRICE_INTEGRITY_BLOCK_LIVE`
+- Pyth/Hyperliquid/Drift/Solana/Jupiter provider settings
 
-## Equity + Trading Desk Safety Phase
+Secrets are not exposed in configuration-summary responses.
 
-The desk now includes a stock-market view focused on tariff-sensitive equities. It can show broad ETFs like SPY and QQQ, sector ETFs, and individual companies that may react to tariffs, supply-chain pressure, China exposure, commodity moves, or macro shocks. The equity data layer is deliberately fail-open: it tries yfinance first, can use Stooq for daily history, and always falls back to deterministic demo data so the app continues to work without API keys or external connectivity.
+## Test Coverage
 
-The system also adds safer paper-mode execution planning. Allocator output can now be translated into a pre-trade sizing preview that checks proposed order size against target allocation, current allocation, venue caps, asset caps, portfolio risk, available cash, and current exposure. It returns allowed size, suggested size, warnings, and reasoning, but never auto-trades.
+The repository now has many focused regression modules beyond the older test-count snapshots in this document. Coverage includes execution safety, PositionLedger accounting, durable lifecycle, Redis/runtime reliability, historical backtesting, frontend alignment, heuristic performance, ingestion provenance, state contracts, ML governance, decision audit, audit correctness, risk unification, operator authorization, readiness and counterfactual replay, along with equity/institutional/geopolitical intelligence tests.
 
-Paper-mode advanced orders now include stop-loss, take-profit, trailing-stop, and bracket-order records. Smart execution can generate TWAP/VWAP slice schedules with estimated slippage and progress tracking. These are proposal/paper-mode features and do not change live trading behavior.
+Use:
 
-Strategy performance, data quality, replay-to-trade simulation, and agent memory are now visible through new API endpoints and frontend panels. Agent behavior remains deterministic and explainable.
+```bash
+pytest -q
+```
 
-## Institutional Intelligence Layer
+or `pytest --collect-only -q` when an exact current test count is needed.
 
-The desk now includes an institutional-style intelligence layer that connects macro/trade events to cross-asset market reactions. It builds a timeline of tariff, sanctions, trade-war, WITS, and GDELT events; estimates how SPY, QQQ, IWM, tariff-sensitive equities, crypto, stablecoins, funding, and basis may react; and shows this in new frontend panels.
+---
 
-It also adds tariff beta and macro sensitivity scoring, cross-asset correlations, contagion detection, scenario simulation, cross-asset hedge recommendations, portfolio explainability, agent consensus, signal outcome attribution, custom watchlists, and structured risk reports. Everything remains proposal-only and fail-open: missing feeds produce safe degraded JSON rather than crashes.
+## Current Product Position
 
-## Institutional Intelligence Audit
+The desk is no longer only a tariff-index dashboard or a paper-trading demo. It is now a research-grade macro/market decision system with explicit historical lineage, deterministic decision logic, governed ML, durable execution accounting, immutable auditability, reproducible replay, operational safety gates and counterfactual scenario analysis.
 
-The institutional layer was audited for router registration, endpoint availability, frontend wiring, render safety, and fail-open behavior. Tests now cover duplicate route prevention, endpoint response shapes, missing provider/storage cases, and empty datasets. The full test suite passes in the repository virtual environment.
-
-## Geopolitical Risk Intelligence Layer
-
-The desk now includes a geopolitical risk workflow that extends the tariff/macro/equity intelligence stack into sanctions, conflict escalation, shipping chokepoints, energy shocks, export controls, cyber/policy shocks, and portfolio protection proposals. A 0-100 Geopolitical Market Risk Index summarizes the current regime and explains the drivers, affected regions, affected assets, provider status, confidence, and data quality.
-
-The new Geopolitics tab is informational and proposal-only. It can display events, sanctions and conflict monitors, chokepoint and energy shock panels, market-impact estimates, geopolitical scenario outputs, protection-mode suggestions, agent signals, and daily risk briefs. Missing live data uses safe fallback/demo payloads and marks the response degraded so the frontend keeps working.
-
-Sanctions and geopolitical signals are not legal, financial, or investment advice. They do not place trades. Paper mode remains the default and live trading behavior is unchanged.
+The next feature work can build on those foundations without needing another broad infrastructure rewrite. Paper/research mode remains the correct default while production live venue adapters remain intentionally gated.
