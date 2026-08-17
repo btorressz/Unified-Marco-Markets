@@ -87,6 +87,32 @@ def evaluate_allocation(spec: dict[str, Any], decision_ts: Any = None) -> dict[s
     return allocate(state, as_of=_as_of(decision_ts))
 
 
+def evaluate_execution_boundary(inputs: dict[str, Any], components: dict[str, Any], decision_ts: Any) -> dict[str, Any]:
+    boundary = inputs.get("execution_boundary")
+    if not isinstance(boundary, dict):
+        raise ReplayUnavailable("final execution-boundary inputs are incomplete")
+    try:
+        from backend.compute.execution_decision import (
+            combine_execution_decision,
+            evaluate_data_guardrails,
+            evaluate_execution_agent,
+        )
+        data_result = evaluate_data_guardrails(boundary.get("data") or {})
+        agent_result = evaluate_execution_agent(boundary.get("agent") or {"status": "not_used"}, as_of=decision_ts)
+        return combine_execution_decision(
+            data_result=data_result,
+            risk_result=components["risk_result"],
+            agent_result=agent_result,
+            execution_mode=str(boundary.get("execution_mode") or "paper"),
+            executor_available=bool(boundary.get("executor_available", True)),
+            as_of=decision_ts,
+        )
+    except ReplayUnavailable:
+        raise
+    except Exception as exc:
+        raise ReplayUnavailable(str(exc)) from exc
+
+
 def recompute_decision(record: dict[str, Any], *, model_loader=None) -> dict[str, Any]:
     inputs = (record.get("input_state") or {}).get("replay_inputs")
     if not isinstance(inputs, dict): raise ReplayUnavailable("explicit replay inputs are unavailable")
@@ -95,8 +121,5 @@ def recompute_decision(record: dict[str, Any], *, model_loader=None) -> dict[str
                   "ml_result": evaluate_ml(inputs.get("ml") or {}, model_loader),
                   "risk_result": evaluate_risk(inputs.get("risk") or {}, ts),
                   "allocation_result": evaluate_allocation(inputs.get("allocation") or {}, ts)}
-    final_input = inputs.get("final_decision")
-    if not isinstance(final_input, dict): raise ReplayUnavailable("final decision replay inputs are incomplete")
-    # The recorded final-decision input identifies the deterministic combiner output;
-    # component outputs above are always recomputed and never copied from targets.
-    return {**record, **components, "final_decision": dict(final_input)}
+    components["final_decision"] = evaluate_execution_boundary(inputs, components, ts)
+    return {**record, **components}
