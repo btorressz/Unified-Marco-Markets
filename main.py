@@ -12,6 +12,7 @@ def create_app():
     from fastapi import FastAPI
     from fastapi.staticfiles import StaticFiles
     from fastapi.responses import HTMLResponse
+    from backend.core.operator_auth import enforce_operator_request
 
     @asynccontextmanager
     async def lifespan(application):
@@ -49,6 +50,7 @@ def create_app():
             close_pool()
 
     app = FastAPI(title="Tariff Risk Desk", version="0.1.0", lifespan=lifespan)
+    app.middleware("http")(enforce_operator_request)
 
     frontend_dir = Path(__file__).parent / "frontend"
     app.mount("/frontend", StaticFiles(directory=str(frontend_dir)), name="frontend")
@@ -152,9 +154,13 @@ def create_app():
     @app.get("/", response_class=HTMLResponse)
     def root():
         html = (frontend_dir / "index.html").read_text(encoding="utf-8")
-        alignment_script = '<script src="/frontend/assets/frontend_alignment.js"></script>'
-        if alignment_script not in html:
-            html = html.replace("</body>", f"  {alignment_script}\n</body>")
+        scripts = (
+            '<script src="/frontend/assets/frontend_alignment.js"></script>',
+            '<script src="/frontend/assets/operator_access.js"></script>',
+        )
+        for script in scripts:
+            if script not in html:
+                html = html.replace("</body>", f"  {script}\n</body>")
         return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
     logger.info("Tariff Risk Desk API initialized with all routes")
