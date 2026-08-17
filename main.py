@@ -62,7 +62,7 @@ def create_app():
     from backend.api.execution_routes import router as execution_router
     from backend.api.risk_routes import router as risk_router
     from backend.api.events_routes import router as events_router
-    from backend.api.health_routes import router as health_router
+    from backend.api.health_routes import router as health_router, probe_router as health_probe_router
     from backend.api.ingestion_routes import router as ingestion_router
     from backend.api.ws_routes import router as ws_router
     from backend.api.stablecoin_routes import router as stablecoin_router
@@ -112,6 +112,7 @@ def create_app():
     app.include_router(risk_router)
     app.include_router(events_router)
     app.include_router(health_router)
+    app.include_router(health_probe_router)
     app.include_router(ingestion_router)
     app.include_router(ws_router)
     app.include_router(stablecoin_router)
