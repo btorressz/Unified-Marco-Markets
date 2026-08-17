@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -124,3 +125,32 @@ def test_scenario_rejects_unknown_and_non_finite_values():
 
 def test_counterfactual_endpoint_is_not_classified_as_operator_mutation():
     assert is_operator_mutation("POST", "/api/decisions/00000000-0000-4000-8000-000000000024/counterfactual") is False
+
+
+def test_counterfactual_module_has_no_execution_or_persistence_boundary_imports():
+    source = Path("backend/compute/counterfactual_replay.py").read_text()
+    forbidden = (
+        "backend.execution",
+        "ExecutionRouter",
+        "DecisionRepository",
+        "OrdersRepository",
+        "StateStore",
+        "redis",
+        ".create(",
+        ".save(",
+        "place_order(",
+        "route_order(",
+    )
+    for token in forbidden:
+        assert token not in source
+
+
+def test_frontend_and_api_are_wired_research_only():
+    routes = Path("backend/api/decision_routes.py").read_text()
+    client = Path("frontend/assets/counterfactual_replay.js").read_text()
+    main = Path("main.py").read_text()
+    assert '@router.post("/{decision_id}/counterfactual")' in routes
+    assert "/counterfactual" in client
+    assert "COUNTERFACTUAL RESEARCH ONLY" in client
+    assert "orders_submitted" in client
+    assert "counterfactual_replay.js" in main
