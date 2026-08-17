@@ -142,22 +142,39 @@ def _risk_runtime_check() -> dict[str, Any]:
         return _check("error", policy_valid=False, shared_state_available=False, blocking_live=True)
 
 
+def _live_executor_capabilities() -> dict[str, bool]:
+    from backend.execution.drift_exec import DriftExecutor
+    from backend.execution.hyperliquid_exec import HyperliquidExecutor
+
+    return {
+        "hyperliquid": bool(HyperliquidExecutor.production_ready),
+        "drift": bool(DriftExecutor.production_ready),
+    }
+
+
 def _execution_config_check() -> dict[str, Any]:
     live_capable = config.EXECUTION_MODE == "live" or config.LIVE_EXECUTION_ENABLED
     auth_required = operator_auth_required()
     token_ok = bool(config.OPERATOR_API_TOKEN) if auth_required else True
+    capabilities = _live_executor_capabilities()
+    configured_live_venues = [venue for venue in config.SUPPORTED_EXECUTION_VENUES if venue != "paper"]
+    ready_live_venues = [venue for venue in configured_live_venues if capabilities.get(venue, False)]
 
     problems: list[str] = []
-    if live_capable and not config.LIVE_EXECUTION_ENABLED:
+    if config.LIVE_EXECUTION_ENABLED and config.EXECUTION_MODE != "live":
+        problems.append("LIVE_EXECUTION_ENABLED requires EXECUTION_MODE=live")
+    if config.EXECUTION_MODE == "live" and not config.LIVE_EXECUTION_ENABLED:
         problems.append("live execution is not enabled")
     if live_capable and not auth_required:
         problems.append("operator authorization is not required")
     if live_capable and not token_ok:
         problems.append("operator token is not configured")
-    if live_capable and not config.SUPPORTED_EXECUTION_VENUES:
-        problems.append("no execution venues are configured")
     if live_capable and not config.SUPPORTED_EXECUTION_MARKETS:
         problems.append("no execution markets are configured")
+    if live_capable and not configured_live_venues:
+        problems.append("no live execution venues are configured")
+    if live_capable and configured_live_venues and not ready_live_venues:
+        problems.append("no configured live executor is production-ready")
 
     return _check(
         "ok" if not problems else "error",
@@ -165,6 +182,9 @@ def _execution_config_check() -> dict[str, Any]:
         live_execution_enabled=config.LIVE_EXECUTION_ENABLED,
         operator_auth_required=auth_required,
         operator_token_configured=bool(config.OPERATOR_API_TOKEN),
+        configured_live_venues=configured_live_venues,
+        production_ready_venues=ready_live_venues,
+        executor_capabilities=capabilities,
         problems=problems,
         blocking_live=bool(problems),
     )
@@ -188,10 +208,11 @@ def build_readiness() -> dict[str, Any]:
         for name, result in checks.items()
         if live_mode and result.get("blocking_live")
     ]
+    blocking_names = {item["component"] for item in blocking}
     degraded = [
         {"component": name, "reason": _reason(name, result)}
         for name, result in checks.items()
-        if not result.get("blocking_live") and result.get("status") not in ("ok",)
+        if result.get("status") != "ok" and name not in blocking_names
     ]
 
     if live_mode:
