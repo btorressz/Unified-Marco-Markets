@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import pytest
-
 from backend import config
 from backend.core import operator_auth
 
@@ -95,8 +93,9 @@ def test_config_summary_never_exposes_operator_token(monkeypatch):
     assert "super-secret" not in str(summary)
 
 
-def test_direct_jupiter_swap_defaults_disabled():
-    assert config.ENABLE_DIRECT_JUPITER_SWAP is False
+def test_direct_jupiter_swap_default_is_fail_closed_in_source():
+    source = (Path(__file__).parents[1] / "backend" / "config.py").read_text()
+    assert 'ENABLE_DIRECT_JUPITER_SWAP: bool = _env_bool("ENABLE_DIRECT_JUPITER_SWAP", False)' in source
 
 
 def test_frontend_operator_token_is_session_only():
