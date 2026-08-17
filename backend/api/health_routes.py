@@ -4,10 +4,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 
 from backend.core.schemas import HealthResponse
 from backend.core.state_store import StateStore
 from backend.core.redis_runtime import get_redis_runtime
+from backend.core.readiness import build_readiness
 from backend.data.db import check_connection
 from backend.data.repositories.ingest_repo import IngestRepository
 from backend.ingest.source_registry import list_sources
@@ -15,6 +17,7 @@ from backend.ingest.source_registry import list_sources
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/health", tags=["health"])
+probe_router = APIRouter(tags=["health"])
 
 _state_store = StateStore()
 _start_time = time.time()
@@ -81,6 +84,34 @@ def _get_feed_status(feed_def: dict[str, Any], now: datetime) -> dict[str, Any]:
         result["status"] = "fallback"
 
     return result
+
+
+@probe_router.get("/live")
+def liveness_probe():
+    """Process-level probe: if this handler responds, the API process is alive."""
+    return {
+        "live": True,
+        "status": "live",
+        "uptime_seconds": round(time.time() - _start_time, 2),
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@probe_router.get("/ready")
+def readiness_probe():
+    """Mode-aware operational readiness; returns 503 only when truly not ready."""
+    result = build_readiness()
+    return JSONResponse(status_code=200 if result["ready"] else 503, content=result)
+
+
+@router.get("/live")
+def health_liveness_probe():
+    return liveness_probe()
+
+
+@router.get("/ready")
+def health_readiness_probe():
+    return readiness_probe()
 
 
 @router.get("/", response_model=HealthResponse)
