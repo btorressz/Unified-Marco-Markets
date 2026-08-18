@@ -1211,3 +1211,12 @@ details { margin-top:8px; } details summary { cursor:pointer;color:var(--text-se
 .governance-detail { margin-top:8px; color:var(--text-muted); font-size:11px; overflow-wrap:anywhere; line-height:1.6; }
 .status-badge.active { color:var(--accent-green); }
 @media(max-width:700px){.ml-governance-grid{grid-template-columns:1fr}.governance-wide{grid-column:auto}}
+
+/* Research data-quality vocabulary and provenance detail */
+.quality-strip{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px;align-items:center;font-size:10px;color:var(--text-muted)}
+.quality-badge{display:inline-block;padding:2px 6px;border:1px solid var(--border-color);border-radius:9px;font-size:9px;font-weight:800;letter-spacing:.03em;color:var(--text-secondary)}
+.quality-badge.observed,.quality-badge.authoritative,.quality-badge.fresh{color:var(--accent-green);border-color:var(--accent-green)}
+.quality-badge.unavailable,.quality-badge.stale{color:var(--accent-red);border-color:var(--accent-red)}
+.quality-badge.proxy,.quality-badge.scenario,.quality-badge.research,.quality-badge.expected{color:var(--accent-yellow);border-color:var(--accent-yellow)}
+.quality-meta{width:100%;line-height:1.45}.quality-link{color:var(--accent-blue);cursor:pointer;text-decoration:underline;background:none;border:0;padding:0;font:inherit}
+.provenance-record{padding:12px;margin-bottom:10px;border:1px solid var(--border-color);border-radius:6px}.provenance-record h3{margin:0;font-size:13px}.provenance-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:7px;margin-top:9px}.provenance-field{padding:6px;background:var(--bg-secondary);overflow-wrap:anywhere}.provenance-field label{display:block;color:var(--text-muted);font-size:9px;text-transform:uppercase}.lineage-flow{margin:8px 0;padding:8px;border-left:3px solid var(--accent-blue);font-size:11px;line-height:1.8}.limitations{margin-top:7px;padding:7px;border-left:3px solid var(--accent-yellow);font-size:11px;color:var(--text-secondary)}

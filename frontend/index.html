@@ -45,6 +45,7 @@
           <div class="metric-box">
             <div class="metric-label">Tariff Index</div>
             <div id="index-value" class="metric-value blue">--</div>
+            <div id="tariff-provenance-strip" class="quality-strip"></div>
           </div>
           <div class="metric-box">
             <div class="metric-label">Shock Score</div>
@@ -271,18 +272,18 @@
         <div class="metric-row">
           <div class="metric-box" id="stable-usdc">
             <div class="metric-label">USDC</div>
-            <div class="metric-value green">$1.0000</div>
-            <div class="metric-sublabel">0 bps depeg</div>
+            <div class="metric-value">--</div>
+            <div class="metric-sublabel">UNAVAILABLE</div><div class="stable-quality"></div>
           </div>
           <div class="metric-box" id="stable-usdt">
             <div class="metric-label">USDT</div>
-            <div class="metric-value green">$1.0000</div>
-            <div class="metric-sublabel">0 bps depeg</div>
+            <div class="metric-value">--</div>
+            <div class="metric-sublabel">UNAVAILABLE</div><div class="stable-quality"></div>
           </div>
           <div class="metric-box" id="stable-dai">
             <div class="metric-label">DAI</div>
-            <div class="metric-value green">$1.0000</div>
-            <div class="metric-sublabel">0 bps depeg</div>
+            <div class="metric-value">--</div>
+            <div class="metric-sublabel">UNAVAILABLE</div><div class="stable-quality"></div>
           </div>
         </div>
 
@@ -540,8 +541,8 @@
         </div>
         <div class="section-title">Data Quality &amp; Provenance</div>
         <div class="card" id="data-quality-panel"><div class="empty-state"><div class="empty-state-text">Loading data quality...</div></div></div>
-        <div class="section-title">Source Registry</div><div class="card" id="ingestion-registry-panel">Loading source registry...</div>
-        <div class="section-title">Ingestion Health</div><div class="card" id="ingestion-status-panel">Loading ingestion health...</div>
+        <div class="section-title">Source Registry &amp; Ingestion Health</div><div class="card" id="ingestion-registry-panel">Loading source registry...</div>
+        <div id="ingestion-status-panel" hidden></div>
         <div class="section-title">Recent Ingestion Runs</div><div class="card ingest-run-table" id="ingestion-runs-panel">Loading recent runs...</div>
         <div class="section-title">Provenance Inspector</div>
         <div class="card provenance-detail"><form id="provenance-form" class="provenance-filters"><input name="source_id" placeholder="Source ID"><input name="artifact_type" placeholder="Artifact type"><input name="artifact_id" placeholder="Artifact ID"><input name="ingest_run_id" placeholder="Run ID"><button type="submit" class="btn btn-primary">Inspect Provenance</button></form><div id="provenance-results">Use filters to inspect durable lineage.</div></div>
