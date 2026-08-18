@@ -20,6 +20,7 @@ from backend.compute.decision_outcomes import (
     symbol_candidates,
 )
 from backend.compute.decision_replay import decision_hash, replay_decision
+from backend.compute.decision_statistics import enrich_performance_summary
 from backend.data.repositories.decision_outcome_repo import DecisionOutcomeRepository
 from backend.data.repositories.decision_repo import DecisionRepository
 
@@ -113,10 +114,36 @@ def decision_performance(
         end_ts=end_ts,
         limit=limit,
     )
-    pairs = [
-        (row, _decision_outcomes(row, tolerance_seconds=tolerance_seconds, include_lifecycle=False))
-        for row in rows
-    ]
+
+    batch = outcome_repository.load_horizon_prices_batch(
+        requests=[
+            {
+                "request_id": str(row.get("id") or index),
+                "decision_ts": row.get("decision_ts"),
+                "symbols": symbol_candidates(row),
+            }
+            for index, row in enumerate(rows)
+        ],
+        horizons=HORIZONS,
+        tolerance_seconds=tolerance_seconds,
+    )
+    batch_results = batch.get("results") or {}
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for index, row in enumerate(rows):
+        request_id = str(row.get("id") or index)
+        observations = batch_results.get(request_id) or {
+            "available": False,
+            "reason": "batched historical market observations unavailable",
+            "observations": [],
+        }
+        outcome = evaluate_decision_outcomes(
+            row,
+            observations,
+            {"available": False, "reason": "not requested for aggregate evaluation"},
+        )
+        outcome["target_horizons"] = horizon_targets(row.get("decision_ts"))
+        outcome["outcome_tolerance_seconds"] = tolerance_seconds
+        pairs.append((row, outcome))
 
     context_history: dict[str, Any] = {
         "available": False,
@@ -149,6 +176,12 @@ def decision_performance(
         primary_horizon=primary_horizon,
         context_history=context_history,
     )
+    result = enrich_performance_summary(
+        result,
+        pairs,
+        primary_horizon=primary_horizon,
+        context_history=context_history,
+    )
     result.update({
         "decision_count": len(rows),
         "filters": {
@@ -159,6 +192,14 @@ def decision_performance(
             "end_ts": end_ts.isoformat() if end_ts else None,
             "limit": limit,
             "outcome_tolerance_seconds": tolerance_seconds,
+        },
+        "outcome_evaluation": {
+            "batched": not bool(batch.get("batch_fallback")),
+            "batch_fallback": bool(batch.get("batch_fallback")),
+            "query_count": int(batch.get("query_count") or 0),
+            "market_row_count": batch.get("market_row_count"),
+            "fallback_reason": batch.get("fallback_reason"),
+            "read_only": True,
         },
         "persisted": False,
         "orders_submitted": 0,
