@@ -14,6 +14,7 @@ from backend.ingest.kraken_ingest import KrakenIngestor
 from backend.ingest.coingecko_ingest import CoinGeckoIngestor
 from backend.ingest.pyth_ingest import PythIngestor
 from backend.ingest.drift_ingest import DriftIngestor
+from backend.ingest.yfinance_ingest import YFinanceIngestor
 from backend.data.repositories.ingest_repo import IngestRepository
 from backend.ingest.provenance import IngestRunContext
 from backend.ingest.source_registry import get_source
@@ -36,6 +37,7 @@ class IngestScheduler:
         self.coingecko = CoinGeckoIngestor(state_store=self.state_store)
         self.pyth = PythIngestor(state_store=self.state_store)
         self.drift = DriftIngestor(state_store=self.state_store)
+        self.yfinance = YFinanceIngestor(state_store=self.state_store)
 
     def schedule_all(self) -> None:
         self.scheduler.add_job(
@@ -61,6 +63,10 @@ class IngestScheduler:
         self.scheduler.add_job(
             self._run_drift, "interval", seconds=60, id="drift_ingest",
             name="Drift Market Ingest", replace_existing=True,
+        )
+        self.scheduler.add_job(
+            self._run_yfinance_crypto, "interval", seconds=60, id="yfinance_crypto_ingest",
+            name="Yahoo Finance Crypto Research Fallback", replace_existing=True,
         )
 
         self.scheduler.start()
@@ -178,3 +184,15 @@ class IngestScheduler:
                 logger.debug("Drift ingest completed")
         except Exception:
             logger.error("Drift ingest job failed", exc_info=True)
+
+    async def _run_yfinance_crypto(self) -> None:
+        try:
+            ran = await self._run_source(
+                "yfinance_crypto_research",
+                "yfinance-crypto-research",
+                lambda context: self.yfinance.fetch_crypto_prices(run_context=context),
+            )
+            if ran:
+                logger.debug("Yahoo Finance crypto research ingest completed")
+        except Exception:
+            logger.error("Yahoo Finance crypto research ingest job failed", exc_info=True)
