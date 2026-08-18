@@ -291,7 +291,7 @@ def _run_synthetic_backtest(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _timeline(bundle: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+def _timeline(bundle: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]]:
     priorities = {
         "index": 10,
         "regime": 20,
@@ -515,6 +515,8 @@ def _run_historical_backtest(
         record_equity(ts)
 
         if strategy == "recorded_orders" or pending is not None:
+            continue
+        if strategy == "buy_hold" and not first_decision:
             continue
         if last_decision_ts is not None and (ts - last_decision_ts).total_seconds() < decision_interval_seconds:
             continue
