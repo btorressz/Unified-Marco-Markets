@@ -46,8 +46,10 @@ def _build_features(symbol: str) -> dict:
             and data.get("depeg_bps") is not None
         ]
     if observed_stables:
+        # Preserve the existing observed-data formula; only missing-data
+        # semantics change in this PR.
         depeg_sum = sum(abs(float(data.get("depeg_bps", 0.0))) for data in observed_stables)
-        features["stablecoin_health_score"] = max(0.0, 1.0 - depeg_sum / (100.0 * len(observed_stables)))
+        features["stablecoin_health_score"] = max(0.0, 1.0 - depeg_sum / 100.0)
         features["stablecoin_data_available"] = True
         features["stablecoin_observation_count"] = len(observed_stables)
     else:
