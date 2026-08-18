@@ -69,14 +69,22 @@ def _get_or_404(decision_id: UUID) -> dict[str, Any]:
     return row
 
 
-def _decision_outcomes(record: dict[str, Any], *, tolerance_seconds: int = DEFAULT_OUTCOME_TOLERANCE_SECONDS) -> dict[str, Any]:
+def _decision_outcomes(
+    record: dict[str, Any],
+    *,
+    tolerance_seconds: int = DEFAULT_OUTCOME_TOLERANCE_SECONDS,
+    include_lifecycle: bool = True,
+) -> dict[str, Any]:
     observations = outcome_repository.load_horizon_prices(
         decision_ts=record.get("decision_ts"),
         symbols=symbol_candidates(record),
         horizons=HORIZONS,
         tolerance_seconds=tolerance_seconds,
     )
-    lifecycle = outcome_repository.load_execution_lifecycle(linked_admission_decision_id(record))
+    lifecycle = (
+        outcome_repository.load_execution_lifecycle(linked_admission_decision_id(record))
+        if include_lifecycle else {"available": False, "reason": "not requested for aggregate evaluation"}
+    )
     result = evaluate_decision_outcomes(record, observations, lifecycle)
     result["target_horizons"] = horizon_targets(record.get("decision_ts"))
     result["outcome_tolerance_seconds"] = tolerance_seconds
@@ -91,7 +99,7 @@ def decision_performance(
     end_ts: datetime | None = None,
     primary_horizon: str = Query("4h"),
     tolerance_seconds: int = Query(DEFAULT_OUTCOME_TOLERANCE_SECONDS, ge=0, le=86400),
-    limit: int = Query(100, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=100),
 ):
     """Evaluate final execution decisions against later persisted market observations."""
     if primary_horizon not in HORIZONS:
@@ -104,7 +112,10 @@ def decision_performance(
         end_ts=end_ts,
         limit=limit,
     )
-    pairs = [(row, _decision_outcomes(row, tolerance_seconds=tolerance_seconds)) for row in rows]
+    pairs = [
+        (row, _decision_outcomes(row, tolerance_seconds=tolerance_seconds, include_lifecycle=False))
+        for row in rows
+    ]
     result = performance_summary(pairs, primary_horizon=primary_horizon)
     result.update({
         "decision_count": len(rows),
@@ -157,7 +168,7 @@ def replay_counterfactual_decision(decision_id: UUID, body: dict[str, Any]):
     except CounterfactualUnavailable as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    outcome_result = _decision_outcomes(record)
+    outcome_result = _decision_outcomes(record, include_lifecycle=False)
     result["realized_outcome"] = realized_counterfactual_comparison(
         outcome_result,
         result,
