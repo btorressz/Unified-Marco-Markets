@@ -120,12 +120,36 @@ def _load_health() -> dict | None:
     return _store.get_snapshot(STABLECOIN_HEALTH) or _store.get_snapshot(STABLECOIN_HEALTH_LEGACY)
 
 
+def _health_contract_is_current(health: dict | None) -> bool:
+    if not isinstance(health, dict):
+        return False
+    for symbol in StablecoinHealthMonitor.STABLES:
+        row = health.get(symbol)
+        quality = row.get("quality") if isinstance(row, dict) else None
+        if not isinstance(quality, dict) or quality.get("contract_version") != 1:
+            return False
+        if "available" not in row:
+            return False
+    return True
+
+
+def _load_or_refresh_health() -> dict:
+    cached = _load_health()
+    if _health_contract_is_current(cached):
+        return cached
+    refreshed = _compute_observed_health(_get_stable_observations())
+    _save_health(refreshed)
+    return refreshed
+
+
 def _observed_health_entries(health: dict) -> dict:
     return {
         symbol: data
         for symbol, data in (health or {}).items()
         if isinstance(data, dict)
-        and data.get("available", True) is not False
+        and data.get("available") is True
+        and isinstance(data.get("quality"), dict)
+        and data["quality"].get("observed") is True
         and data.get("status") in {"ok", "warning", "alert"}
     }
 
@@ -147,18 +171,14 @@ def get_history(window: str = Query("7d")):
 
 @router.get("/health")
 def get_health():
-    cached = _load_health()
-    if not cached:
-        cached = _compute_observed_health(_get_stable_observations())
-        _save_health(cached)
-
+    cached = _load_or_refresh_health()
     observed = _observed_health_entries(cached)
     alerts = _monitor.get_alerts(observed) if observed else []
     stress_data = {}
     for symbol, data in cached.items():
         if not isinstance(data, dict):
             continue
-        if data.get("available", True) is False or data.get("status") == "unavailable":
+        if data.get("available") is not True or data.get("status") == "unavailable":
             stress_data[symbol] = {**data, "stress": None, "peg_break_probability": None}
             continue
         stress = _monitor.detect_stress(data.get("depeg_bps", 0), 0.0, 0.0)
@@ -173,8 +193,6 @@ def get_health():
 
 @router.get("/alerts")
 def get_alerts():
-    cached = _load_health()
-    if not cached:
-        return {"alerts": []}
+    cached = _load_or_refresh_health()
     observed = _observed_health_entries(cached)
     return {"alerts": _monitor.get_alerts(observed) if observed else []}
