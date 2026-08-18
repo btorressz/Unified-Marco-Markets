@@ -2,18 +2,19 @@
 
 This module is research-only and additive. It does not change decision outcomes,
 cohort definitions, execution behavior, or persisted state. It enriches the
-existing performance summary with distribution, coverage, and sample-size
-metadata derived from the same immutable outcome results.
+existing performance summary with distribution, coverage, sample-size, and
+historical-context governance metadata derived from immutable outcome results.
 """
 from __future__ import annotations
 
 from statistics import median, stdev
 from typing import Any, Callable
 
+from backend.compute.context_governance import governed_decision_context, governance_contract
 from backend.compute.decision_outcomes import (
     HORIZONS,
     _component_label,
-    decision_regime_context,
+    _metric_summary,
 )
 
 VERY_LOW_SAMPLE_THRESHOLD = 5
@@ -107,6 +108,24 @@ def _merge_group_statistics(
             metric.update(metric_statistics(items, horizon))
 
 
+def _replace_governed_groups(
+    target: dict[str, Any] | None,
+    groups: dict[str, list[dict[str, Any]]],
+    horizon: str,
+) -> dict[str, Any]:
+    """Replace only cohort/regime groupings after freshness is applied."""
+    rebuilt: dict[str, Any] = {}
+    for key, items in sorted(groups.items()):
+        metric = _metric_summary(items, horizon)
+        metric.update(metric_statistics(items, horizon))
+        rebuilt[key] = metric
+    if isinstance(target, dict):
+        target.clear()
+        target.update(rebuilt)
+        return target
+    return rebuilt
+
+
 def enrich_performance_summary(
     summary: dict[str, Any],
     pairs: list[tuple[dict[str, Any], dict[str, Any]]],
@@ -114,7 +133,7 @@ def enrich_performance_summary(
     primary_horizon: str,
     context_history: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Add descriptive statistics without changing existing performance metrics."""
+    """Add descriptive statistics and governed historical cohort reconstruction."""
     if primary_horizon not in HORIZONS:
         raise ValueError(f"Unsupported horizon: {primary_horizon}")
 
@@ -127,7 +146,7 @@ def enrich_performance_summary(
 
     context_history = context_history or {}
     contexts = {
-        str(record.get("id") or ""): decision_regime_context(record, context_history)
+        str(record.get("id") or ""): governed_decision_context(record, context_history)
         for record, _ in pairs
     }
 
@@ -149,18 +168,57 @@ def enrich_performance_summary(
     _merge_group_statistics(summary.get("performance_by_heuristic_version"), heuristic, primary_horizon)
     _merge_group_statistics(summary.get("performance_by_model_version"), model, primary_horizon)
 
-    regimes = summary.get("performance_by_regime") or {}
-    vol_groups = context_groups("vol_regime")
-    _merge_group_statistics(regimes.get("vol_regime"), vol_groups, primary_horizon)
-    _merge_group_statistics(summary.get("performance_by_vol_regime"), vol_groups, primary_horizon)
-    _merge_group_statistics(regimes.get("funding_regime"), context_groups("funding_regime"), primary_horizon)
-    _merge_group_statistics(regimes.get("shock_state"), context_groups("shock_state"), primary_horizon)
-    _merge_group_statistics(summary.get("performance_by_regime_signature"), context_groups("regime_signature"), primary_horizon)
+    regimes = summary.setdefault("performance_by_regime", {})
+    vol = _replace_governed_groups(regimes.get("vol_regime"), context_groups("vol_regime"), primary_horizon)
+    regimes["vol_regime"] = vol
+    regimes["funding_regime"] = _replace_governed_groups(regimes.get("funding_regime"), context_groups("funding_regime"), primary_horizon)
+    regimes["shock_state"] = _replace_governed_groups(regimes.get("shock_state"), context_groups("shock_state"), primary_horizon)
+    summary["performance_by_vol_regime"] = vol
+    summary["performance_by_regime_signature"] = _replace_governed_groups(
+        summary.get("performance_by_regime_signature"), context_groups("regime_signature"), primary_horizon
+    )
 
-    cohorts = summary.get("performance_by_cohort") or {}
-    _merge_group_statistics(cohorts.get("tariff_escalation"), context_groups("tariff_escalation"), primary_horizon)
-    _merge_group_statistics(cohorts.get("stablecoin_health"), context_groups("stablecoin_health"), primary_horizon)
-    _merge_group_statistics(cohorts.get("liquidity_state"), context_groups("liquidity_state"), primary_horizon)
+    cohorts = summary.setdefault("performance_by_cohort", {})
+    cohorts["tariff_escalation"] = _replace_governed_groups(
+        cohorts.get("tariff_escalation"), context_groups("tariff_escalation"), primary_horizon
+    )
+    cohorts["stablecoin_health"] = _replace_governed_groups(
+        cohorts.get("stablecoin_health"), context_groups("stablecoin_health"), primary_horizon
+    )
+    cohorts["liquidity_state"] = _replace_governed_groups(
+        cohorts.get("liquidity_state"), context_groups("liquidity_state"), primary_horizon
+    )
+
+    context_fields = (
+        "vol_regime", "funding_regime", "shock_state", "regime_signature",
+        "tariff_escalation", "stablecoin_health", "liquidity_state",
+    )
+    available_counts: dict[str, int] = {}
+    stale_counts: dict[str, int] = {}
+    unavailable_counts: dict[str, int] = {}
+    recorded_counts: dict[str, int] = {}
+    for field in context_fields:
+        values = [context.get(field, "unavailable") for context in contexts.values()]
+        governance = [
+            (context.get("context_governance") or {}).get(field) or {}
+            for context in contexts.values()
+        ]
+        available_counts[field] = sum(value not in {"unavailable", "unavailable_stale"} for value in values)
+        stale_counts[field] = sum(value == "unavailable_stale" for value in values)
+        unavailable_counts[field] = sum(value == "unavailable" for value in values)
+        recorded_counts[field] = sum(item.get("origin") == "immutable_decision" for item in governance)
+
+    coverage = summary.setdefault("context_coverage", {})
+    coverage.update({
+        "decision_count": len(pairs),
+        "available_counts": available_counts,
+        "stale_counts": stale_counts,
+        "unavailable_counts": unavailable_counts,
+        "recorded_decision_counts": recorded_counts,
+        "source_errors": dict(context_history.get("errors") or {}),
+        "truncated": dict(context_history.get("truncated") or {}),
+        "historical_context_available": bool(context_history.get("available", False)),
+    })
 
     summary["statistics_contract"] = {
         "descriptive_only": True,
@@ -172,4 +230,9 @@ def enrich_performance_summary(
         "dispersion": "sample standard deviation; unavailable when n < 2",
         "missingness": "sample_count minus outcomes available at the selected horizon",
     }
+    summary["cohort_governance"] = governance_contract()
+    summary["interpretation"] = (
+        str(summary.get("interpretation") or "")
+        + " Persisted fallback context must also satisfy versioned maximum-age rules; stale observations are labeled unavailable_stale and excluded from named cohorts."
+    ).strip()
     return summary
