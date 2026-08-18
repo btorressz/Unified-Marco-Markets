@@ -10,6 +10,8 @@ from backend.core.state_keys import (
     PYTH_SOL_USD_NATIVE,
     STABLECOIN_HEALTH,
     WITS_AGGREGATE,
+    YFINANCE_SOL_USD,
+    YFINANCE_SOL_USD_NATIVE,
     normalize_price_symbol,
     price_snapshot_candidates,
 )
@@ -28,12 +30,14 @@ def test_price_symbols_share_one_canonical_identity():
     assert PYTH_SOL_USD == "price:pyth:SOL_USD"
     assert KRAKEN_SOL_USD == "price:kraken:SOL_USD"
     assert COINGECKO_SOL_USD == "price:coingecko:SOL_USD"
+    assert YFINANCE_SOL_USD == "price:yfinance:SOL_USD"
 
 
 def test_canonical_candidates_keep_provider_native_compatibility():
     assert price_snapshot_candidates("pyth", "SOL/USD") == (PYTH_SOL_USD, PYTH_SOL_USD_NATIVE)
     assert price_snapshot_candidates("kraken", "SOL/USD") == (KRAKEN_SOL_USD, KRAKEN_SOL_USD_NATIVE)
     assert price_snapshot_candidates("coingecko", "SOL/USD") == (COINGECKO_SOL_USD, COINGECKO_SOL_USD_NATIVE)
+    assert price_snapshot_candidates("yfinance", "SOL/USD") == (YFINANCE_SOL_USD, YFINANCE_SOL_USD_NATIVE)
 
 
 def test_market_ingestors_dual_write_native_and_canonical_keys():
@@ -41,6 +45,7 @@ def test_market_ingestors_dual_write_native_and_canonical_keys():
         "backend/ingest/pyth_ingest.py",
         "backend/ingest/kraken_ingest.py",
         "backend/ingest/coingecko_ingest.py",
+        "backend/ingest/yfinance_ingest.py",
     ):
         text = source(path)
         assert "native_key" in text
@@ -57,6 +62,10 @@ def test_source_registry_exposes_native_and_canonical_market_keys():
     assert '"canonical_snapshot_key": KRAKEN_SOL_USD' in text
     assert '"snapshot_key": COINGECKO_SOL_USD_NATIVE' in text
     assert '"canonical_snapshot_key": COINGECKO_SOL_USD' in text
+    assert '"snapshot_key": YFINANCE_SOL_USD_NATIVE' in text
+    assert '"canonical_snapshot_key": YFINANCE_SOL_USD' in text
+    assert '"research_fallback": True' in text
+    assert '"execution_eligible": False' in text
 
 
 def test_pyth_endpoint_and_bearer_auth_are_configurable_without_exposing_secret():
@@ -75,10 +84,13 @@ def test_price_authority_and_integrity_use_contract_helpers():
     validator = source("backend/core/price_validator.py")
     assert "price_snapshot_candidates(venue, symbol)" in authority
     assert 'price_snapshot_candidates(venue, "SOL/USD")' in markets
-    assert 'len(valid_prices) < 2' in validator
+    assert 'len(execution_prices) < 2' in validator
     assert '"status": "UNKNOWN"' in validator
     assert '"integrity_status": "UNKNOWN"' in validator
-    assert '"No prices available"' in validator
+    assert '"can_establish_integrity": False' in validator
+    assert "_EXECUTION_PRICE_SOURCES" in validator
+    assert "_RESEARCH_PRICE_SOURCES" in validator
+    assert "include_research_fallback" in authority
 
 
 def test_wits_aggregate_is_canonical_and_legacy_alias_is_same_payload():
