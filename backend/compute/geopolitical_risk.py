@@ -60,13 +60,28 @@ def compute_geopolitical_index(state: dict[str, Any] | None = None) -> dict[str,
     top = sorted(components.items(), key=lambda kv: kv[1], reverse=True)[:5]
     affected = sorted({a for h in conflicts.get("hotspots", []) for a in h.get("assets", [])} | {a for c in shipping.get("chokepoints", []) for a in c.get("affected_assets", [])} | set(energy.get("affected_assets", [])))
     confidence = 0.55 if degraded else 0.78
+    evidence_count = int((gdelt or {}).get("evidence_count", 0) or 0)
     return {
         "overall_score": round(overall, 2), "regime": _regime(overall), **{k: round(v, 2) for k, v in components.items()},
         "regional_breakdown": regional, "top_drivers": [{"driver": k, "score": round(v, 2)} for k, v in top], "affected_assets": affected,
-        "confidence": confidence, "data_quality": "degraded" if degraded else "healthy", "provider_status": {"gdelt": "ok" if gdelt else "degraded", "wits": "ok" if wits else "degraded", "ofac_public_download": "fallback_demo" if not state.get("ofac") else "ok"},
+        "confidence": confidence, "data_quality": "degraded" if degraded else "healthy",
+        "provider_status": {"gdelt": "ok" if gdelt else "degraded", "wits": "ok" if wits else "degraded", "ofac_public_download": "not_configured" if not state.get("ofac") else "ok"},
+        "claim_type": "composite_research_proxy", "observed": False, "proxy": True,
+        "evidence_basis": "weighted_proxy_components_with_source_context",
+        "evidence_count": evidence_count,
+        "authoritative_event_evidence": bool(state.get("ofac")),
+        "limitations": ["The composite index is a deterministic research proxy; it is not itself an observed geopolitical event."],
         "reasoning": ["Weighted index combines sanctions, conflict, shipping, energy, cyber/policy, tariff, and market stress components", "All outputs are informational/proposal-only; no autonomous trading"], "timestamp": _now(),
         "component_details": {"sanctions": sanctions, "conflicts": conflicts, "shipping": shipping, "energy": energy},
     }
+
+
+def _evidence_fields(item: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "claim_type", "observed", "proxy", "scenario", "authoritative_evidence",
+        "evidence_basis", "evidence_count", "evidence_ids", "evidence_quality", "limitations",
+    )
+    return {key: item.get(key) for key in keys if key in item}
 
 
 def build_geopolitical_events(index: dict[str, Any]) -> dict[str, Any]:
@@ -75,12 +90,40 @@ def build_geopolitical_events(index: dict[str, Any]) -> dict[str, Any]:
     events.extend(normalized_conflict_events(details.get("conflicts", {})))
     sanctions = details.get("sanctions", {})
     for p in sanctions.get("programs", [])[:4]:
-        events.append({"event_id": _event_id("SANCTIONS", p["program"]), "event_type": "SANCTIONS" if "export" not in p["program"].lower() else "EXPORT_CONTROL", "title": f"{p['program']} sanctions/export-control watch", "region": p["program"], "countries": p["countries"], "severity": p["severity"], "confidence": index.get("confidence", 0.55), "source": "OFAC/GDELT fallback", "event_timestamp": index.get("timestamp"), "data_timestamp": index.get("timestamp"), "affected_sectors": p["affected_sectors"], "affected_assets": p["affected_assets"], "reasoning": p["reasoning"], "data_quality": p["data_quality"]})
+        events.append({
+            "event_id": _event_id("SANCTIONS", p["program"]),
+            "event_type": "SANCTIONS" if "export" not in p["program"].lower() else "EXPORT_CONTROL",
+            "title": f"{p['program']} sanctions/export-control watch", "region": p["program"], "countries": p["countries"],
+            "severity": p["severity"], "confidence": index.get("confidence", 0.55),
+            "source": "GDELT contextual evidence" if p.get("evidence_count") else "static sanctions research proxy",
+            "event_timestamp": index.get("timestamp"), "data_timestamp": index.get("timestamp"),
+            "affected_sectors": p["affected_sectors"], "affected_assets": p["affected_assets"],
+            "reasoning": p["reasoning"], "data_quality": p["data_quality"], **_evidence_fields(p),
+        })
     for c in details.get("shipping", {}).get("chokepoints", [])[:4]:
-        events.append({"event_id": _event_id("SHIPPING", c["name"]), "event_type": "SHIPPING_DISRUPTION", "title": f"{c['name']} chokepoint stress", "region": c["region"], "countries": [c["region"]], "severity": c["severity"], "confidence": index.get("confidence", 0.55), "source": "GDELT/chokepoint fallback", "event_timestamp": index.get("timestamp"), "data_timestamp": index.get("timestamp"), "affected_sectors": c["affected_sectors"], "affected_assets": c["affected_assets"], "reasoning": c["reasoning"], "data_quality": c["data_quality"]})
+        events.append({
+            "event_id": _event_id("SHIPPING", c["name"]), "event_type": "SHIPPING_DISRUPTION",
+            "title": f"{c['name']} chokepoint stress", "region": c["region"], "countries": [c["region"]],
+            "severity": c["severity"], "confidence": index.get("confidence", 0.55),
+            "source": "GDELT contextual evidence" if c.get("evidence_count") else "static chokepoint research proxy",
+            "event_timestamp": index.get("timestamp"), "data_timestamp": index.get("timestamp"),
+            "affected_sectors": c["affected_sectors"], "affected_assets": c["affected_assets"],
+            "reasoning": c["reasoning"], "data_quality": c["data_quality"], **_evidence_fields(c),
+        })
     energy = details.get("energy", {})
-    events.append({"event_id": _event_id("ENERGY", index.get("timestamp", "")), "event_type": "ENERGY_SHOCK", "title": "Energy / commodity shock monitor", "region": "Global", "countries": ["Global"], "severity": energy.get("severity", "medium"), "confidence": index.get("confidence", 0.55), "source": "market/geopolitical fallback", "event_timestamp": index.get("timestamp"), "data_timestamp": index.get("timestamp"), "affected_sectors": ["Energy", "Food", "Critical Minerals"], "affected_assets": energy.get("affected_assets", []), "reasoning": energy.get("reasoning", []), "data_quality": energy.get("data_quality", "degraded")})
-    return {"events": events, "count": len(events), "data_quality": index.get("data_quality", "degraded"), "timestamp": _now()}
+    events.append({
+        "event_id": _event_id("ENERGY", index.get("timestamp", "")), "event_type": "ENERGY_SHOCK",
+        "title": "Energy / commodity shock monitor", "region": "Global", "countries": ["Global"],
+        "severity": energy.get("severity", "medium"), "confidence": index.get("confidence", 0.55),
+        "source": "geopolitical proxy model", "event_timestamp": index.get("timestamp"), "data_timestamp": index.get("timestamp"),
+        "affected_sectors": ["Energy", "Food", "Critical Minerals"], "affected_assets": energy.get("affected_assets", []),
+        "reasoning": energy.get("reasoning", []), "data_quality": energy.get("data_quality", "degraded"), **_evidence_fields(energy),
+    })
+    return {
+        "events": events, "count": len(events), "data_quality": index.get("data_quality", "degraded"),
+        "claim_boundary": "Events may be observed evidence, evidence-supported proxies, or static proxies; inspect claim_type and evidence fields.",
+        "timestamp": _now(),
+    }
 
 
 def _event_id(kind: str, key: str) -> str:
