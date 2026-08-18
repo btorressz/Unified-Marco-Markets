@@ -27,27 +27,36 @@ def price_snapshot_key(venue: str, symbol: str) -> str:
 PYTH_SOL_USD_NATIVE = "price:pyth:SOL/USD"
 KRAKEN_SOL_USD_NATIVE = "price:kraken:SOLUSD"
 COINGECKO_SOL_USD_NATIVE = "price:coingecko:SOLANA/USD"
+YFINANCE_SOL_USD_NATIVE = "price:yfinance:SOL-USD"
+YFINANCE_BTC_USD_NATIVE = "price:yfinance:BTC-USD"
+YFINANCE_ETH_USD_NATIVE = "price:yfinance:ETH-USD"
 
 PYTH_SOL_USD = price_snapshot_key("pyth", "SOL/USD")
 KRAKEN_SOL_USD = price_snapshot_key("kraken", "SOL/USD")
 COINGECKO_SOL_USD = price_snapshot_key("coingecko", "SOL/USD")
+YFINANCE_SOL_USD = price_snapshot_key("yfinance", "SOL/USD")
+YFINANCE_BTC_USD = price_snapshot_key("yfinance", "BTC/USD")
+YFINANCE_ETH_USD = price_snapshot_key("yfinance", "ETH/USD")
 
-_SOL_USD_NATIVE_BY_VENUE = {
-    "pyth": PYTH_SOL_USD_NATIVE,
-    "kraken": KRAKEN_SOL_USD_NATIVE,
-    "coingecko": COINGECKO_SOL_USD_NATIVE,
+_NATIVE_BY_VENUE_AND_SYMBOL = {
+    ("pyth", "SOL_USD"): PYTH_SOL_USD_NATIVE,
+    ("kraken", "SOL_USD"): KRAKEN_SOL_USD_NATIVE,
+    ("coingecko", "SOL_USD"): COINGECKO_SOL_USD_NATIVE,
+    ("yfinance", "SOL_USD"): YFINANCE_SOL_USD_NATIVE,
+    ("yfinance", "BTC_USD"): YFINANCE_BTC_USD_NATIVE,
+    ("yfinance", "ETH_USD"): YFINANCE_ETH_USD_NATIVE,
 }
 
 
 def price_snapshot_candidates(venue: str, symbol: str) -> tuple[str, ...]:
     """Return canonical-first keys with a known source-native compatibility key."""
     venue_key = str(venue).lower().strip()
+    canonical_symbol = normalize_price_symbol(symbol)
     canonical = price_snapshot_key(venue_key, symbol)
     keys = [canonical]
-    if normalize_price_symbol(symbol) == "SOL_USD":
-        native = _SOL_USD_NATIVE_BY_VENUE.get(venue_key)
-        if native and native not in keys:
-            keys.append(native)
+    native = _NATIVE_BY_VENUE_AND_SYMBOL.get((venue_key, canonical_symbol))
+    if native and native not in keys:
+        keys.append(native)
     return tuple(keys)
 
 

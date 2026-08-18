@@ -17,6 +17,7 @@ def test_registry_has_stable_source_contracts():
         "pyth_sol_usd",
         "kraken_sol_usd",
         "coingecko_sol_usd",
+        "yfinance_crypto_research",
         "hyperliquid_sol_usd",
         "drift_sol_perp",
         "drift_funding_sol_perp",
@@ -24,9 +25,15 @@ def test_registry_has_stable_source_contracts():
         "gdelt_macro_news",
     }
     assert expected == set(SOURCE_REGISTRY)
-    assert SOURCE_REGISTRY["pyth_sol_usd"]["fallback_chain"] == ["kraken_sol_usd", "coingecko_sol_usd"]
+    assert SOURCE_REGISTRY["pyth_sol_usd"]["fallback_chain"] == ["kraken_sol_usd", "coingecko_sol_usd", "yfinance_crypto_research"]
+    assert SOURCE_REGISTRY["kraken_sol_usd"]["fallback_chain"] == ["coingecko_sol_usd", "yfinance_crypto_research"]
+    assert SOURCE_REGISTRY["coingecko_sol_usd"]["fallback_chain"] == ["yfinance_crypto_research"]
     assert all(s["provider"] and s["expected_cadence_seconds"] > 0 and s["storage_target"] for s in list_sources())
     assert SOURCE_REGISTRY["pyth_sol_usd"]["authoritative"] is True
+    yahoo = SOURCE_REGISTRY["yfinance_crypto_research"]
+    assert yahoo["authoritative"] is False
+    assert yahoo["research_fallback"] is True
+    assert yahoo["execution_eligible"] is False
 
 
 def test_wits_registry_uses_canonical_aggregate_freshness_key():
@@ -85,6 +92,7 @@ def test_scheduler_preserves_run_ledger_and_lease_semantics():
     assert "lease_skipped=True" in scheduler
     assert '"drift_sol_perp", "drift-market"' in scheduler
     assert '"drift_funding_sol_perp", "drift-funding"' in scheduler
+    assert '"yfinance_crypto_research"' in scheduler
     assert "if self.state_store.get_redis() is None:" in scheduler
 
 

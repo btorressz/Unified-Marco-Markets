@@ -7,6 +7,7 @@ from backend.core.schemas import MarketDataResponse
 from backend.core.timeutils import window_to_seconds
 from backend.core.state_keys import PRICE_INTEGRITY, PRICE_INTEGRITY_LEGACY_LATEST, price_snapshot_candidates
 from backend.core.state_store import StateStore
+from backend.core.price_authority import PriceAuthority
 from backend.core.price_validator import PriceValidator
 from backend.data.repositories.market_repo import MarketRepository
 
@@ -17,6 +18,7 @@ router = APIRouter(prefix="/api/markets", tags=["markets"])
 _market_repo = MarketRepository()
 _store = StateStore()
 _validator = PriceValidator()
+_price_authority = PriceAuthority(state_store=_store)
 
 
 @router.get("/latest", response_model=list[MarketDataResponse])
@@ -36,6 +38,25 @@ def get_latest():
     except Exception as exc:
         logger.error("Error fetching latest market data: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch latest market data")
+
+
+@router.get("/research-price")
+def get_research_price(symbol: str = Query(default="SOL/USD")):
+    """Return the normal price chain plus explicit Yahoo research fallback.
+
+    This endpoint is informational only. ExecutionRouter and readiness continue
+    to call PriceAuthority without include_research_fallback and therefore never
+    treat Yahoo as execution-grade.
+    """
+    result = _price_authority.get_price(symbol, include_research_fallback=True)
+    return {
+        **result.to_dict(),
+        "symbol": symbol.upper(),
+        "research_fallback_allowed": True,
+        "research_grade": result.source == "yfinance",
+        "execution_eligible": result.source != "yfinance",
+        "degraded": result.source == "yfinance" or not result.found,
+    }
 
 
 @router.get("/history")
@@ -63,7 +84,7 @@ def get_funding():
 def get_integrity():
     prices = {}
     feed_ts = {}
-    for venue in ["pyth", "kraken", "coingecko"]:
+    for venue in ["pyth", "kraken", "coingecko", "yfinance"]:
         snap = None
         for key in price_snapshot_candidates(venue, "SOL/USD"):
             snap = _store.get_snapshot(key)
