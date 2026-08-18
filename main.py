@@ -159,6 +159,7 @@ def create_app():
             '<script src="/frontend/assets/frontend_alignment.js"></script>',
             '<script src="/frontend/assets/operator_access.js"></script>',
             '<script src="/frontend/assets/counterfactual_replay.js"></script>',
+            '<script src="/frontend/assets/decision_outcomes.js"></script>',
         )
         for script in scripts:
             if script not in html:
