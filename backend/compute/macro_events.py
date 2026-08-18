@@ -4,6 +4,8 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from backend.ingest.quality import is_observed_snapshot
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -16,22 +18,26 @@ def _event_id(kind: str, ts: str, title: str) -> str:
 def build_macro_events(wits: dict[str, Any] | None = None, gdelt: dict[str, Any] | None = None, limit: int = 25) -> dict[str, Any]:
     """Build a fail-open macro/trade event timeline from WITS/GDELT snapshots.
 
-    When live snapshots are absent, deterministic demo events are returned with
-    degraded=True so the UI and downstream analytics still have a stable shape.
+    WITS contributes observed tariff evidence only. Explicit fallback/synthetic or
+    unavailable WITS snapshots are treated as unavailable, including legacy
+    snapshots left in Redis by older application versions. When live snapshots
+    are absent, deterministic demo events remain explicitly degraded.
     """
     now = _now()
-    degraded = not wits or not gdelt
+    wits_observed = is_observed_snapshot(wits)
+    observed_wits = wits if wits_observed else None
+    degraded = not observed_wits or not gdelt
     warnings: list[str] = []
-    if not wits:
-        warnings.append("WITS tariff updates unavailable; using demo tariff event")
+    if not observed_wits:
+        warnings.append("WITS tariff observation unavailable or non-observed; using degraded demo tariff context")
     if not gdelt:
         warnings.append("GDELT shock feed unavailable; using demo headline events")
 
     raw: list[dict[str, Any]] = []
-    if wits:
-        ts = str(wits.get("ts") or wits.get("updated_at") or now.isoformat())
-        pressure = float(wits.get("tariff_pressure", wits.get("value", 35.0)) or 35.0)
-        raw.append({"type": "wits_tariff_update", "title": "WITS tariff pressure update", "severity": "high" if pressure >= 70 else "medium" if pressure >= 45 else "low", "score": pressure, "source": "WITS", "ts": ts, "details": wits})
+    if observed_wits:
+        ts = str(observed_wits.get("ts") or observed_wits.get("updated_at") or now.isoformat())
+        pressure = float(observed_wits.get("tariff_pressure", observed_wits.get("value", 35.0)) or 35.0)
+        raw.append({"type": "wits_tariff_update", "title": "WITS tariff pressure update", "severity": "high" if pressure >= 70 else "medium" if pressure >= 45 else "low", "score": pressure, "source": "WITS", "ts": ts, "details": observed_wits})
     if gdelt:
         ts = str(gdelt.get("ts") or now.isoformat())
         shock = abs(float(gdelt.get("shock_score", gdelt.get("tone_shock", 0.0)) or 0.0))
@@ -46,10 +52,16 @@ def build_macro_events(wits: dict[str, Any] | None = None, gdelt: dict[str, Any]
         for typ, title, score, source, days in demo:
             ts = (now - timedelta(days=days)).isoformat()
             raw.append({"type": typ, "title": title, "severity": "medium", "score": score, "source": source, "ts": ts, "details": {"demo": True}})
+    elif not observed_wits:
+        # Preserve a stable research timeline without presenting missing WITS as
+        # observed evidence when GDELT is still available.
+        ts = now.isoformat()
+        raw.append({"type": "tariff_change", "title": "Demo tariff change watch", "severity": "medium", "score": 62.0, "source": "WITS fallback", "ts": ts, "details": {"demo": True, "reason": "wits_unavailable_or_non_observed"}})
 
     events = []
     for item in sorted(raw, key=lambda x: x.get("ts", ""), reverse=True)[: max(1, min(limit, 100))]:
-        events.append({**item, "id": _event_id(item["type"], item["ts"], item["title"]), "degraded": degraded})
+        item_degraded = degraded or bool((item.get("details") or {}).get("demo"))
+        events.append({**item, "id": _event_id(item["type"], item["ts"], item["title"]), "degraded": item_degraded})
     return {"events": events, "count": len(events), "degraded": degraded, "warnings": warnings, "ts": now.isoformat()}
 
 
