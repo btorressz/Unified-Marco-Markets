@@ -107,6 +107,7 @@
     return `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin:10px 0">
         <div class="card" style="padding:9px"><div class="metric-label">Evaluated</div><strong>${Number(metric.evaluated_count || 0)}</strong></div>
+        <div class="card" style="padding:9px"><div class="metric-label">Decision Quality</div><strong>${pct(metric.decision_quality_rate)}</strong></div>
         <div class="card" style="padding:9px"><div class="metric-label">ALLOW</div><strong>${Number(metric.allow_count || 0)}</strong></div>
         <div class="card" style="padding:9px"><div class="metric-label">BLOCK</div><strong>${Number(metric.block_count || 0)}</strong></div>
         <div class="card" style="padding:9px"><div class="metric-label">Side Favorable</div><strong>${pct(metric.requested_side_favorable_rate)}</strong></div>
@@ -118,14 +119,39 @@
 
   function groupTable(title, groups) {
     const rows = Object.entries(groups || {}).map(([key, metric]) => `<tr>
-      <td>${escapeHtml(key)}</td><td>${Number(metric.evaluated_count || 0)}</td>
-      <td>${pct(metric.requested_side_favorable_rate)}</td><td>${pct(metric.average_signed_return)}</td>
-      <td>${pct(metric.block_avoided_adverse_move_rate)}</td><td>${pct(metric.block_opportunity_cost_rate)}</td>
+      <td>${escapeHtml(key)}</td>
+      <td>${Number(metric.evaluated_count || 0)}</td>
+      <td>${pct(metric.decision_quality_rate)}</td>
+      <td>${pct(metric.average_signed_return)}</td>
+      <td>${Number(metric.allow_count || 0)}</td>
+      <td>${Number(metric.block_count || 0)}</td>
+      <td>${pct(metric.block_avoided_adverse_move_rate)}</td>
+      <td>${pct(metric.block_opportunity_cost_rate)}</td>
     </tr>`).join('');
     if (!rows) return '';
     return `<h4 style="margin:12px 0 6px">${escapeHtml(title)}</h4><div class="table-scroll"><table>
-      <thead><tr><th>Group</th><th>Evaluated</th><th>Side Favorable</th><th>Avg Signed</th><th>BLOCK Avoided</th><th>BLOCK Opp Cost</th></tr></thead>
+      <thead><tr><th>Group</th><th>Evaluated</th><th>Decision Quality</th><th>Avg Signed</th><th>ALLOW</th><th>BLOCK</th><th>BLOCK Avoided</th><th>BLOCK Opp Cost</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
+  }
+
+  function coveragePanel(coverage) {
+    coverage = coverage || {};
+    const counts = coverage.available_counts || {};
+    const errors = coverage.source_errors || {};
+    const truncated = coverage.truncated || {};
+    const total = Number(coverage.decision_count || 0);
+    const rows = Object.entries(counts).map(([field, count]) =>
+      `<tr><td>${escapeHtml(field)}</td><td>${Number(count || 0)} / ${total}</td></tr>`
+    ).join('');
+    const warnings = [];
+    if (Object.keys(errors).length) warnings.push(`Source errors: ${JSON.stringify(errors)}`);
+    if (Object.values(truncated).some(Boolean)) warnings.push(`Historical context was bounded: ${JSON.stringify(truncated)}`);
+    return `<details style="margin-top:12px">
+      <summary style="cursor:pointer;font-size:12px;font-weight:600">Cohort Context Coverage</summary>
+      <div style="font-size:11px;color:var(--text-muted);margin:6px 0">Cohorts use values recorded on the immutable decision when present; otherwise they are reconstructed from persisted observations at or before the decision timestamp. Missing context remains unavailable.</div>
+      ${rows ? `<div class="table-scroll"><table><thead><tr><th>Context</th><th>Available</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+      ${warnings.length ? `<pre style="white-space:pre-wrap;font-size:11px">${escapeHtml(warnings.join('\n'))}</pre>` : ''}
+    </details>`;
   }
 
   function renderPerformance(payload, result) {
@@ -136,25 +162,35 @@
     const primary = payload.primary_horizon || '4h';
     const metric = (payload.horizons || {})[primary] || {};
     const decay = payload.performance_decay || {};
+    const regimes = payload.performance_by_regime || {};
+    const cohorts = payload.performance_by_cohort || {};
     result.innerHTML = `
       <div class="replay-verdict ${payload.status === 'available' ? 'match' : 'mismatch'}">${escapeHtml(String(payload.status || 'unavailable').toUpperCase())}</div>
       <div style="font-size:11px;color:var(--text-muted);margin-top:6px">Primary horizon: ${escapeHtml(primary)} · Final execution decisions scanned: ${Number(payload.decision_count || 0)}</div>
       ${summaryCards(metric)}
+      ${groupTable('By Volatility Regime', regimes.vol_regime || payload.performance_by_vol_regime)}
+      ${groupTable('By Funding Regime', regimes.funding_regime)}
+      ${groupTable('By Shock State', regimes.shock_state)}
+      ${groupTable('By Combined Regime Signature', payload.performance_by_regime_signature)}
+      ${groupTable('Tariff Escalation Cohort', cohorts.tariff_escalation)}
+      ${groupTable('Stablecoin Health Cohort', cohorts.stablecoin_health)}
+      ${groupTable('Liquidity State Cohort', cohorts.liquidity_state)}
       ${groupTable('By Market', payload.performance_by_market)}
       ${groupTable('By Venue', payload.performance_by_venue)}
-      ${groupTable('By Volatility Regime', payload.performance_by_vol_regime)}
       ${groupTable('By Heuristic Version', payload.performance_by_heuristic_version)}
       ${groupTable('By Model Version', payload.performance_by_model_version)}
+      ${coveragePanel(payload.context_coverage)}
       <h4 style="margin:12px 0 6px">Performance Decay</h4>
       <pre style="white-space:pre-wrap;font-size:11px">${escapeHtml(JSON.stringify(decay, null, 2))}</pre>
-      <div class="audit-only-banner" style="margin-top:10px"><strong>DECISION PERFORMANCE RESEARCH ONLY</strong> — Metrics describe later market moves for the requested side; they do not rewrite decisions or claim blocked trades produced realized P&amp;L.</div>`;
+      <div style="font-size:11px;color:var(--text-muted);margin-top:8px">Decision Quality = ALLOW followed by a favorable requested-side move, or BLOCK followed by an adverse requested-side move. Flat outcomes do not count as favorable decisions.</div>
+      <div class="audit-only-banner" style="margin-top:10px"><strong>DECISION PERFORMANCE RESEARCH ONLY</strong> — Cohorts describe persisted decision-time context and later market moves. They do not rewrite decisions, optimize thresholds, or claim blocked trades produced realized P&amp;L.</div>`;
   }
 
   async function loadPerformance() {
     const panel = document.getElementById('decision-performance-result');
     const select = document.getElementById('decision-performance-horizon');
     if (!panel || !select) return;
-    panel.textContent = 'Evaluating final decisions against persisted historical market data...';
+    panel.textContent = 'Evaluating final decisions and reconstructing persisted decision-time cohorts...';
     try {
       const response = await fetch(`/api/decisions/performance?primary_horizon=${encodeURIComponent(select.value)}&limit=100`);
       const payload = await response.json();
@@ -181,7 +217,7 @@
           </label>
           <button type="button" class="btn btn-primary" id="decision-performance-load">Evaluate Decisions</button>
         </div>
-        <div id="decision-performance-result" style="margin-top:12px"><div class="empty-state-text">Performance is calculated on demand from immutable decisions and persisted market history.</div></div>
+        <div id="decision-performance-result" style="margin-top:12px"><div class="empty-state-text">Performance and cohort analytics are calculated on demand from immutable decisions and persisted historical context.</div></div>
       </div>`;
     tab.appendChild(wrapper);
     wrapper.querySelector('#decision-performance-load').addEventListener('click', loadPerformance);

@@ -102,7 +102,7 @@ def decision_performance(
     tolerance_seconds: int = Query(DEFAULT_OUTCOME_TOLERANCE_SECONDS, ge=0, le=86400),
     limit: int = Query(50, ge=1, le=100),
 ):
-    """Evaluate final execution decisions against later persisted market observations."""
+    """Evaluate final execution decisions and decision-time cohorts from persisted history."""
     if primary_horizon not in HORIZONS:
         raise HTTPException(status_code=422, detail=f"Unsupported horizon: {primary_horizon}")
     rows = repository.list(
@@ -117,7 +117,38 @@ def decision_performance(
         (row, _decision_outcomes(row, tolerance_seconds=tolerance_seconds, include_lifecycle=False))
         for row in rows
     ]
-    result = performance_summary(pairs, primary_horizon=primary_horizon)
+
+    context_history: dict[str, Any] = {
+        "available": False,
+        "reason": "no final execution decisions in the requested window",
+        "regime_snapshots": [],
+        "index_history": [],
+        "stablecoin_ticks": [],
+        "errors": {},
+        "truncated": {},
+        "read_only": True,
+    }
+    valid_times: list[datetime] = []
+    for row in rows:
+        try:
+            value = row.get("decision_ts")
+            parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            valid_times.append(parsed.astimezone(timezone.utc))
+        except Exception:
+            continue
+    if valid_times:
+        context_history = outcome_repository.load_context_history(
+            start_ts=min(valid_times),
+            end_ts=max(valid_times),
+        )
+
+    result = performance_summary(
+        pairs,
+        primary_horizon=primary_horizon,
+        context_history=context_history,
+    )
     result.update({
         "decision_count": len(rows),
         "filters": {
