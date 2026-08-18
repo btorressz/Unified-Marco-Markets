@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, HTTPException, Query
 
 from backend.compute.counterfactual_replay import CounterfactualUnavailable, counterfactual_decision
+from backend.compute.counterfactual_sensitivity import SensitivityUnavailable, counterfactual_sensitivity
 from backend.compute.decision_outcomes import (
     DEFAULT_OUTCOME_TOLERANCE_SECONDS,
     HORIZONS,
@@ -174,4 +175,40 @@ def replay_counterfactual_decision(decision_id: UUID, body: dict[str, Any]):
         result,
         horizon=outcome_horizon,
     )
+    return result
+
+
+@router.post("/{decision_id}/sensitivity")
+def replay_counterfactual_sensitivity(decision_id: UUID, body: dict[str, Any]):
+    """Run bounded research-only 1-D/2-D counterfactual decision sensitivity."""
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Sensitivity request must be an object")
+    outcome_horizon = str(body.get("outcome_horizon") or "4h")
+    if outcome_horizon not in HORIZONS:
+        raise HTTPException(status_code=422, detail=f"Unsupported horizon: {outcome_horizon}")
+    try:
+        tolerance_seconds = int(body.get("tolerance_seconds", DEFAULT_OUTCOME_TOLERANCE_SECONDS))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="tolerance_seconds must be an integer") from exc
+    if tolerance_seconds < 0 or tolerance_seconds > 86400:
+        raise HTTPException(status_code=422, detail="tolerance_seconds must be between 0 and 86400")
+
+    record = _get_or_404(decision_id)
+    outcome_result = _decision_outcomes(
+        record,
+        tolerance_seconds=tolerance_seconds,
+        include_lifecycle=False,
+    )
+    try:
+        result = counterfactual_sensitivity(
+            record,
+            x=body.get("x"),
+            y=body.get("y"),
+            fixed_scenario=body.get("fixed_scenario") or {},
+            realized_outcome=outcome_result,
+            outcome_horizon=outcome_horizon,
+        )
+    except SensitivityUnavailable as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    result["outcome_tolerance_seconds"] = tolerance_seconds
     return result
