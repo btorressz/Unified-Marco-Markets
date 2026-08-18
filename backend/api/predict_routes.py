@@ -35,11 +35,28 @@ def _build_features(symbol: str) -> dict:
         features["cross_venue_spread_bps"] = 0.0
 
     stable = _store.get_snapshot("stablecoin:health:latest") or _store.get_snapshot("stablecoin:health")
-    if stable:
-        depeg_sum = sum(d.get("depeg_bps", 0) for d in stable.values() if isinstance(d, dict))
-        features["stablecoin_health_score"] = max(0, 1.0 - depeg_sum / 100.0)
+    observed_stables = []
+    if isinstance(stable, dict):
+        observed_stables = [
+            data for data in stable.values()
+            if isinstance(data, dict)
+            and data.get("available") is True
+            and isinstance(data.get("quality"), dict)
+            and data["quality"].get("observed") is True
+            and data.get("depeg_bps") is not None
+        ]
+    if observed_stables:
+        # Preserve the existing observed-data formula; only missing-data
+        # semantics change in this PR.
+        depeg_sum = sum(abs(float(data.get("depeg_bps", 0.0))) for data in observed_stables)
+        features["stablecoin_health_score"] = max(0.0, 1.0 - depeg_sum / 100.0)
+        features["stablecoin_data_available"] = True
+        features["stablecoin_observation_count"] = len(observed_stables)
     else:
-        features["stablecoin_health_score"] = 1.0
+        # Neutral means "no directional contribution", not "perfect peg".
+        features["stablecoin_health_score"] = 0.5
+        features["stablecoin_data_available"] = False
+        features["stablecoin_observation_count"] = 0
 
     micro = _store.get_snapshot("microstructure:latest")
     if micro:

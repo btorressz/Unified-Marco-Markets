@@ -32,6 +32,38 @@ class IngestRepository:
         return execute_returning("""INSERT INTO data_provenance (ingest_run_id,source_id,artifact_type,artifact_id,artifact_key,provider_timestamp,received_at,persisted_at,fallback_used,fallback_source_id,quality,lineage,metadata)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""", (ingest_run_id,source_id,artifact_type,str(artifact_id) if artifact_id is not None else None,artifact_key,provider_timestamp,received_at,persisted_at or datetime.now(timezone.utc),fallback_used,fallback_source_id,json.dumps(quality or {}),json.dumps(lineage or {},default=str),json.dumps(metadata or {},default=str)))
 
+    def record_source_observation(
+        self,
+        *,
+        ingest_run_id,
+        source_id: str,
+        artifact_type: str,
+        artifact_key: str,
+        observation: dict,
+        quality: dict,
+        lineage: dict,
+        provider_timestamp=None,
+        received_at=None,
+    ):
+        """Persist one normalized observation in the existing provenance ledger.
+
+        This deliberately reuses data_provenance rather than introducing another
+        generic observation table. Source-specific historical tables can still be
+        added later when a concrete analytical query requires one.
+        """
+        return self.record_provenance(
+            ingest_run_id,
+            source_id,
+            artifact_type,
+            artifact_key=artifact_key,
+            provider_timestamp=provider_timestamp,
+            received_at=received_at,
+            fallback_used=False,
+            quality=quality,
+            lineage=lineage,
+            metadata={"observation": observation},
+        )
+
     def get_recent_runs(self, source_id=None, status=None, start_ts=None, end_ts=None, limit=100):
         limit=max(1,min(int(limit),1000)); clauses=[]; params=[]
         for col,val,op in (("source_id",source_id,"="),("status",status,"="),("started_at",start_ts,">="),("started_at",end_ts,"<=")):

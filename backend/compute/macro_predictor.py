@@ -51,7 +51,8 @@ class MacroPredictor:
         raw_score += s5 * self.feature_weights["cross_venue_spread"]
         contributions["cross_venue_spread"] = round(s5 * self.feature_weights["cross_venue_spread"], 4)
 
-        stable = features.get("stablecoin_health_score", 1.0)
+        # Missing stablecoin observations are neutral, not a perfect-peg signal.
+        stable = features.get("stablecoin_health_score", 0.5)
         s6 = (stable - 0.5) * 2.0
         raw_score += s6 * self.feature_weights["stablecoin_health"]
         contributions["stablecoin_health"] = round(s6 * self.feature_weights["stablecoin_health"], 4)
