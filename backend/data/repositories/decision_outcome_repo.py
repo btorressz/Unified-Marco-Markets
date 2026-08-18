@@ -11,6 +11,8 @@ class DecisionOutcomeRepository:
     """Bounded SELECT-only adapter over existing historical/execution tables."""
 
     CONTEXT_MAX_ROWS = 10000
+    BATCH_MARKET_MAX_ROWS = 50000
+    HORIZON_ROW_LIMIT = 100
 
     @staticmethod
     def _dt(value: Any) -> datetime:
@@ -78,6 +80,138 @@ class DecisionOutcomeRepository:
             return {"available": False, "reason": f"historical market observations unavailable: {exc}", "observations": []}
 
         return {"available": True, "observations": rows}
+
+    def load_horizon_prices_batch(
+        self,
+        *,
+        requests: list[dict[str, Any]],
+        horizons: dict[str, int],
+        tolerance_seconds: int = 3600,
+    ) -> dict[str, Any]:
+        """Batch aggregate outcome reads while preserving single-loader semantics.
+
+        The broad market query is only an I/O optimization. For each decision and
+        horizon we reapply the original SQL window, `ORDER BY ts,id`, and 100-row
+        cap before the existing compute-layer symbol/venue selector sees rows.
+        If the broad query itself would exceed its safety bound, this method falls
+        back to the existing per-decision loader rather than changing outcomes.
+        """
+        normalized: list[dict[str, Any]] = []
+        results: dict[str, dict[str, Any]] = {}
+        tolerance = max(0, int(tolerance_seconds))
+
+        for index, request in enumerate(requests or []):
+            request_id = str(request.get("request_id") or request.get("decision_id") or index)
+            symbols = sorted({str(symbol).upper() for symbol in (request.get("symbols") or []) if str(symbol).strip()})
+            if not symbols:
+                results[request_id] = {"available": False, "reason": "decision symbol is unavailable", "observations": []}
+                continue
+            try:
+                decision_time = self._dt(request.get("decision_ts"))
+            except Exception:
+                results[request_id] = {"available": False, "reason": "decision timestamp is invalid", "observations": []}
+                continue
+            targets = {
+                horizon: decision_time + timedelta(seconds=int(seconds))
+                for horizon, seconds in horizons.items()
+            }
+            normalized.append({
+                "request_id": request_id,
+                "decision_time": decision_time,
+                "symbols": symbols,
+                "targets": targets,
+            })
+
+        if not normalized:
+            return {
+                "available": bool(results),
+                "results": results,
+                "query_count": 0,
+                "batch_fallback": False,
+                "read_only": True,
+            }
+
+        all_symbols = sorted({symbol for request in normalized for symbol in request["symbols"]})
+        start = min(target for request in normalized for target in request["targets"].values())
+        end = max(target for request in normalized for target in request["targets"].values()) + timedelta(seconds=tolerance)
+
+        try:
+            market_rows = execute_query(
+                """SELECT id, symbol, venue, price, confidence, ts
+                   FROM market_ticks
+                   WHERE UPPER(symbol) = ANY(%s)
+                     AND ts >= %s::timestamptz
+                     AND ts <= %s::timestamptz
+                   ORDER BY ts ASC, id ASC
+                   LIMIT %s""",
+                (all_symbols, start.isoformat(), end.isoformat(), self.BATCH_MARKET_MAX_ROWS + 1),
+            )
+        except Exception as exc:
+            reason = f"historical market observations unavailable: {exc}"
+            for request in normalized:
+                results[request["request_id"]] = {"available": False, "reason": reason, "observations": []}
+            return {
+                "available": False,
+                "results": results,
+                "query_count": 1,
+                "batch_fallback": False,
+                "reason": reason,
+                "read_only": True,
+            }
+
+        if len(market_rows) > self.BATCH_MARKET_MAX_ROWS:
+            # Correctness wins over batching if the bounded broad read is too large.
+            for request in normalized:
+                results[request["request_id"]] = self.load_horizon_prices(
+                    decision_ts=request["decision_time"],
+                    symbols=request["symbols"],
+                    horizons=horizons,
+                    tolerance_seconds=tolerance,
+                )
+            return {
+                "available": True,
+                "results": results,
+                "query_count": 1 + len(normalized) * len(horizons),
+                "batch_fallback": True,
+                "fallback_reason": "bounded batch market window exceeded safety limit",
+                "read_only": True,
+            }
+
+        prepared: list[tuple[datetime, dict[str, Any]]] = []
+        for row in market_rows:
+            try:
+                prepared.append((self._dt(row.get("ts")), dict(row)))
+            except Exception:
+                continue
+
+        for request in normalized:
+            observations: list[dict[str, Any]] = []
+            allowed_symbols = set(request["symbols"])
+            for horizon, target in request["targets"].items():
+                horizon_end = target + timedelta(seconds=tolerance)
+                eligible = [
+                    (observed, row)
+                    for observed, row in prepared
+                    if str(row.get("symbol") or "").upper() in allowed_symbols
+                    and target <= observed <= horizon_end
+                ][: self.HORIZON_ROW_LIMIT]
+                for observed, row in eligible:
+                    item = dict(row)
+                    item["horizon"] = horizon
+                    item["target_ts"] = target.isoformat()
+                    item["lag_seconds"] = max(0.0, (observed - target).total_seconds())
+                    item["ts"] = observed.isoformat()
+                    observations.append(item)
+            results[request["request_id"]] = {"available": True, "observations": observations}
+
+        return {
+            "available": True,
+            "results": results,
+            "query_count": 1,
+            "batch_fallback": False,
+            "market_row_count": len(prepared),
+            "read_only": True,
+        }
 
     def load_context_history(self, *, start_ts: Any, end_ts: Any) -> dict[str, Any]:
         """Load bounded persisted context around a decision-performance window.
