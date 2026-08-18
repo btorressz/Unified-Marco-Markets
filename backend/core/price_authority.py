@@ -7,7 +7,8 @@ from backend.core.state_store import StateStore
 
 logger = logging.getLogger(__name__)
 
-_VENUE_PRIORITY = ["pyth", "kraken", "coingecko"]
+_EXECUTION_PRICE_PRIORITY = ["pyth", "kraken", "coingecko"]
+_RESEARCH_PRICE_PRIORITY = [*_EXECUTION_PRICE_PRIORITY, "yfinance"]
 
 
 class PriceResult:
@@ -42,12 +43,20 @@ class PriceAuthority:
     def __init__(self, state_store: StateStore | None = None):
         self._store = state_store or StateStore()
 
-    def get_price(self, symbol: str) -> PriceResult:
-        for venue in _VENUE_PRIORITY:
+    def get_price(self, symbol: str, include_research_fallback: bool = False) -> PriceResult:
+        """Return the first cached price in the requested trust tier.
+
+        The default path remains execution-grade and intentionally excludes
+        yfinance.  Callers must opt into research fallback explicitly.
+        """
+        venues = _RESEARCH_PRICE_PRIORITY if include_research_fallback else _EXECUTION_PRICE_PRIORITY
+        for venue in venues:
             for cache_key in price_snapshot_candidates(venue, symbol):
                 try:
                     cached = self._store.get_snapshot(cache_key)
                     if cached is None:
+                        continue
+                    if venue == "yfinance" and (cached.get("synthetic") or cached.get("execution_eligible") is True):
                         continue
                     price = float(cached.get("price", 0))
                     if price <= 0:
@@ -79,7 +88,7 @@ class PriceAuthority:
                     logger.warning("Error reading price cache for %s/%s", venue, symbol, exc_info=True)
                     continue
 
-        logger.info("No cached price found for %s across venues %s", symbol, _VENUE_PRIORITY)
+        logger.info("No cached price found for %s across venues %s", symbol, venues)
         return PriceResult(price=0.0, confidence=0.0, source="none", found=False)
 
     def set_price(self, symbol: str, venue: str, price: float, confidence: float = 1.0) -> None:
@@ -93,9 +102,10 @@ class PriceAuthority:
         }
         self._store.set_snapshot(cache_key, data, ttl=120)
 
-    def get_all_venues(self, symbol: str) -> list[dict[str, Any]]:
+    def get_all_venues(self, symbol: str, include_research_fallback: bool = False) -> list[dict[str, Any]]:
         results = []
-        for venue in _VENUE_PRIORITY:
+        venues = _RESEARCH_PRICE_PRIORITY if include_research_fallback else _EXECUTION_PRICE_PRIORITY
+        for venue in venues:
             for cache_key in price_snapshot_candidates(venue, symbol):
                 try:
                     cached = self._store.get_snapshot(cache_key)
