@@ -291,7 +291,7 @@ def _run_synthetic_backtest(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _timeline(bundle: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]]:
+def _timeline(bundle: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
     priorities = {
         "index": 10,
         "regime": 20,
