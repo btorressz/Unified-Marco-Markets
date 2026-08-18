@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from statistics import mean
-from typing import Any
+from typing import Any, Callable
 
 HORIZONS = {"1h": 3600, "4h": 14400, "24h": 86400, "7d": 604800}
 DEFAULT_OUTCOME_TOLERANCE_SECONDS = 3600
@@ -25,12 +25,17 @@ def _dt(value: Any) -> datetime:
     return result.astimezone(timezone.utc)
 
 
-def _finite_positive(value: Any) -> float | None:
+def _finite(value: Any) -> float | None:
     try:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    return number if number > 0 and number == number and abs(number) != float("inf") else None
+    return number if number == number and abs(number) != float("inf") else None
+
+
+def _finite_positive(value: Any) -> float | None:
+    number = _finite(value)
+    return number if number is not None and number > 0 else None
 
 
 def _replay_inputs(record: dict[str, Any]) -> dict[str, Any]:
@@ -152,6 +157,15 @@ def _market_classification(action: str, signed_return: float) -> str:
     return "directional_market_move"
 
 
+def interpret_action_against_outcome(action: str, signed_return: float) -> str:
+    action = str(action or "").lower().strip()
+    if action == "allow":
+        return "requested_side_favorable" if signed_return > 0 else "requested_side_adverse" if signed_return < 0 else "flat"
+    if action == "block":
+        return "missed_favorable_move" if signed_return > 0 else "avoided_adverse_move" if signed_return < 0 else "flat"
+    return "unavailable"
+
+
 def summarize_execution_lifecycle(payload: dict[str, Any] | None) -> dict[str, Any]:
     payload = payload or {}
     if payload.get("available") is False:
@@ -256,14 +270,155 @@ def evaluate_decision_outcomes(
     }
 
 
-def _regime_label(record: dict[str, Any]) -> str:
+# ---------------------------------------------------------------------------
+# Decision cohort / regime reconstruction
+# ---------------------------------------------------------------------------
+
+
+def _container_value(record: dict[str, Any], key: str) -> Any:
     inputs = _replay_inputs(record)
-    for spec_name, container_name in (("heuristic", "context"), ("allocation", "state")):
-        spec = inputs.get(spec_name) or {}
-        container = spec.get(container_name) or {}
-        if container.get("vol_regime") is not None:
-            return str(container["vol_regime"])
-    return "unavailable"
+    locations = (
+        (inputs.get("heuristic") or {}).get("context"),
+        (inputs.get("allocation") or {}).get("state"),
+        (inputs.get("execution_boundary") or {}).get("data"),
+        ((inputs.get("execution_boundary") or {}).get("agent") or {}).get("market_state"),
+        inputs.get("risk") or {},
+        (inputs.get("risk") or {}).get("runtime_state"),
+        record.get("derived_state") or {},
+    )
+    for container in locations:
+        if isinstance(container, dict) and container.get(key) is not None:
+            return container[key]
+    return None
+
+
+def _latest_before(rows: list[dict[str, Any]], decision_ts: Any) -> dict[str, Any] | None:
+    cutoff = _dt(decision_ts)
+    latest: dict[str, Any] | None = None
+    latest_ts: datetime | None = None
+    for row in rows or []:
+        try:
+            ts = _dt(row.get("ts"))
+        except Exception:
+            continue
+        if ts <= cutoff and (latest_ts is None or ts > latest_ts or (ts == latest_ts and str(row.get("id") or "") > str((latest or {}).get("id") or ""))):
+            latest = row
+            latest_ts = ts
+    return latest
+
+
+def _latest_stablecoins_before(rows: list[dict[str, Any]], decision_ts: Any) -> dict[str, dict[str, Any]]:
+    cutoff = _dt(decision_ts)
+    latest: dict[str, tuple[datetime, dict[str, Any]]] = {}
+    for row in rows or []:
+        try:
+            ts = _dt(row.get("ts"))
+        except Exception:
+            continue
+        if ts > cutoff:
+            continue
+        symbol = str(row.get("symbol") or "unknown").upper()
+        current = latest.get(symbol)
+        if current is None or ts > current[0] or (ts == current[0] and str(row.get("id") or "") > str(current[1].get("id") or "")):
+            latest[symbol] = (ts, row)
+    return {symbol: row for symbol, (_, row) in latest.items()}
+
+
+def _shock_from_score(value: Any) -> str:
+    score = _finite(value)
+    if score is None:
+        return "unavailable"
+    return "high" if score > 1.5 else "elevated" if score > 0.5 else "normal"
+
+
+def _tariff_cohort(value: Any) -> str:
+    roc = _finite(value)
+    if roc is None:
+        return "unavailable"
+    return "severe" if roc > 8.0 else "elevated" if roc > 5.0 else "normal"
+
+
+def _stablecoin_cohort(record: dict[str, Any], context_history: dict[str, Any], decision_ts: Any) -> str:
+    stable_health = _finite(_container_value(record, "stable_health"))
+    if stable_health is not None:
+        return "stress" if stable_health < 0.7 else "healthy"
+
+    latest = _latest_stablecoins_before(context_history.get("stablecoin_ticks") or [], decision_ts)
+    depegs = [_finite(row.get("depeg_bps")) for row in latest.values()]
+    valid = [value for value in depegs if value is not None]
+    if not valid:
+        return "unavailable"
+    worst = max(valid)
+    if worst > 50.0:
+        return "alert_depeg"
+    if worst > 20.0:
+        return "warning_depeg"
+    return "healthy"
+
+
+def _liquidity_cohort(record: dict[str, Any]) -> str:
+    inputs = _replay_inputs(record)
+    agent = (inputs.get("execution_boundary") or {}).get("agent") or {}
+    market_state = agent.get("market_state") if isinstance(agent.get("market_state"), dict) else {}
+    depth = _finite(market_state.get("liquidity_depth"))
+    minimum = _finite(agent.get("min_liquidity_depth"))
+    if depth is None:
+        return "unavailable"
+    if depth <= 0:
+        return "zero_or_unavailable"
+    if minimum is None:
+        return "observed_no_threshold"
+    return "below_minimum" if depth < minimum else "sufficient"
+
+
+def decision_regime_context(record: dict[str, Any], context_history: dict[str, Any] | None = None) -> dict[str, str]:
+    """Resolve truthful decision-time regimes from recorded or persisted history."""
+    context_history = context_history or {}
+    decision_ts = record.get("decision_ts")
+    regime_row = _latest_before(context_history.get("regime_snapshots") or [], decision_ts)
+    index_row = _latest_before(context_history.get("index_history") or [], decision_ts)
+
+    vol = _container_value(record, "vol_regime")
+    if vol is None and regime_row:
+        vol = regime_row.get("vol_regime")
+    vol_regime = str(vol).lower().strip() if vol is not None else "unavailable"
+
+    funding = _container_value(record, "funding_regime")
+    if funding is None and regime_row:
+        funding = regime_row.get("funding_regime")
+    funding_regime = str(funding).lower().strip() if funding is not None else "unavailable"
+
+    shock = _container_value(record, "shock_state")
+    if shock is not None:
+        shock_state = str(shock).lower().strip()
+    elif regime_row and regime_row.get("shock_state") is not None:
+        shock_state = str(regime_row.get("shock_state")).lower().strip()
+    else:
+        score = _container_value(record, "shock_score")
+        if score is None and index_row:
+            score = index_row.get("shock_score")
+        shock_state = _shock_from_score(score)
+
+    tariff_roc = _container_value(record, "tariff_rate_of_change")
+    if tariff_roc is None and index_row:
+        tariff_roc = index_row.get("rate_of_change")
+    tariff = _tariff_cohort(tariff_roc)
+
+    stablecoin = _stablecoin_cohort(record, context_history, decision_ts)
+    liquidity = _liquidity_cohort(record)
+    signature = f"{shock_state}|{funding_regime}|{vol_regime}"
+    if "unavailable" in {shock_state, funding_regime, vol_regime}:
+        signature = "unavailable"
+
+    return {
+        "vol_regime": vol_regime,
+        "funding_regime": funding_regime,
+        "shock_state": shock_state,
+        "regime_signature": signature,
+        "tariff_escalation": tariff,
+        "stablecoin_health": stablecoin,
+        "liquidity_state": liquidity,
+    }
 
 
 def _component_label(record: dict[str, Any], component: str) -> str:
@@ -291,11 +446,23 @@ def _metric_summary(items: list[dict[str, Any]], horizon: str) -> dict[str, Any]
     allow_signed = [float(item["outcomes"][horizon]["signed_return"]) for item in allows]
     block_signed = [float(item["outcomes"][horizon]["signed_return"]) for item in blocks]
     favorable = sum(value > 0 for value in signed)
+    quality_count = sum(
+        1
+        for item in evaluated
+        if (
+            ((item.get("decision") or {}).get("action") == "allow" and float(item["outcomes"][horizon]["signed_return"]) > 0)
+            or ((item.get("decision") or {}).get("action") == "block" and float(item["outcomes"][horizon]["signed_return"]) < 0)
+        )
+    )
+    flat_count = sum(value == 0 for value in signed)
     return {
         "sample_count": len(items),
         "evaluated_count": len(evaluated),
         "allow_count": len(allows),
         "block_count": len(blocks),
+        "decision_quality_count": quality_count,
+        "decision_quality_rate": quality_count / len(evaluated) if evaluated else None,
+        "flat_outcome_count": flat_count,
         "requested_side_favorable_rate": favorable / len(signed) if signed else None,
         "average_signed_return": mean(signed) if signed else None,
         "allow_average_signed_return": mean(allow_signed) if allow_signed else None,
@@ -304,29 +471,63 @@ def _metric_summary(items: list[dict[str, Any]], horizon: str) -> dict[str, Any]
     }
 
 
-def _group_metrics(pairs: list[tuple[dict[str, Any], dict[str, Any]]], key_fn, horizon: str) -> dict[str, Any]:
+def _group_metrics(
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]],
+    key_fn: Callable[[dict[str, Any], dict[str, Any]], Any],
+    horizon: str,
+) -> dict[str, Any]:
     groups: dict[str, list[dict[str, Any]]] = {}
     for record, result in pairs:
         groups.setdefault(str(key_fn(record, result)), []).append(result)
     return {key: _metric_summary(values, horizon) for key, values in sorted(groups.items())}
 
 
+def _cohort_groups(
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]],
+    contexts: dict[str, dict[str, str]],
+    field: str,
+    horizon: str,
+) -> dict[str, Any]:
+    return _group_metrics(
+        pairs,
+        lambda record, result: contexts.get(str(record.get("id") or ""), {}).get(field, "unavailable"),
+        horizon,
+    )
+
+
 def performance_summary(
     pairs: list[tuple[dict[str, Any], dict[str, Any]]],
     *,
     primary_horizon: str = "4h",
+    context_history: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if primary_horizon not in HORIZONS:
         raise ValueError(f"Unsupported horizon: {primary_horizon}")
     results = [result for _, result in pairs]
     horizon_metrics = {horizon: _metric_summary(results, horizon) for horizon in HORIZONS}
+    context_history = context_history or {}
+    contexts = {
+        str(record.get("id") or ""): decision_regime_context(record, context_history)
+        for record, _ in pairs
+    }
 
     by_market = _group_metrics(pairs, lambda record, result: record.get("market") or "unknown", primary_horizon)
     by_venue = _group_metrics(pairs, lambda record, result: record.get("venue") or "unknown", primary_horizon)
     by_type = _group_metrics(pairs, lambda record, result: record.get("decision_type") or "unknown", primary_horizon)
-    by_regime = _group_metrics(pairs, lambda record, result: _regime_label(record), primary_horizon)
     by_heuristic = _group_metrics(pairs, lambda record, result: _component_label(record, "heuristic"), primary_horizon)
     by_model = _group_metrics(pairs, lambda record, result: _component_label(record, "ml"), primary_horizon)
+
+    performance_by_regime = {
+        "vol_regime": _cohort_groups(pairs, contexts, "vol_regime", primary_horizon),
+        "funding_regime": _cohort_groups(pairs, contexts, "funding_regime", primary_horizon),
+        "shock_state": _cohort_groups(pairs, contexts, "shock_state", primary_horizon),
+    }
+    performance_by_cohort = {
+        "tariff_escalation": _cohort_groups(pairs, contexts, "tariff_escalation", primary_horizon),
+        "stablecoin_health": _cohort_groups(pairs, contexts, "stablecoin_health", primary_horizon),
+        "liquidity_state": _cohort_groups(pairs, contexts, "liquidity_state", primary_horizon),
+    }
+    performance_by_signature = _cohort_groups(pairs, contexts, "regime_signature", primary_horizon)
 
     dated: list[tuple[datetime, dict[str, Any]]] = []
     for record, result in pairs:
@@ -350,6 +551,10 @@ def performance_summary(
             r = recent_metrics
             p = prior_metrics
             decay["changes"] = {
+                "decision_quality_rate_change": (
+                    r["decision_quality_rate"] - p["decision_quality_rate"]
+                    if r["decision_quality_rate"] is not None and p["decision_quality_rate"] is not None else None
+                ),
                 "requested_side_favorable_rate_change": (
                     r["requested_side_favorable_rate"] - p["requested_side_favorable_rate"]
                     if r["requested_side_favorable_rate"] is not None and p["requested_side_favorable_rate"] is not None else None
@@ -360,6 +565,14 @@ def performance_summary(
                 ),
             }
 
+    context_quality = {
+        field: sum(1 for value in contexts.values() if value.get(field) != "unavailable")
+        for field in (
+            "vol_regime", "funding_regime", "shock_state", "regime_signature",
+            "tariff_escalation", "stablecoin_health", "liquidity_state",
+        )
+    }
+
     return {
         "status": "available" if any(metric["evaluated_count"] for metric in horizon_metrics.values()) else "unavailable",
         "research_only": True,
@@ -368,11 +581,32 @@ def performance_summary(
         "performance_by_market": by_market,
         "performance_by_venue": by_venue,
         "performance_by_decision_type": by_type,
-        "performance_by_vol_regime": by_regime,
+        # Backward-compatible alias retained for existing clients.
+        "performance_by_vol_regime": performance_by_regime["vol_regime"],
+        "performance_by_regime": performance_by_regime,
+        "performance_by_regime_signature": performance_by_signature,
+        "performance_by_cohort": performance_by_cohort,
         "performance_by_heuristic_version": by_heuristic,
         "performance_by_model_version": by_model,
         "performance_decay": decay,
-        "interpretation": "Metrics evaluate the requested side's later market move; BLOCK metrics quantify avoided adverse moves versus missed favorable moves, not realized trading P&L.",
+        "context_coverage": {
+            "decision_count": len(pairs),
+            "available_counts": context_quality,
+            "source_errors": dict(context_history.get("errors") or {}),
+            "truncated": dict(context_history.get("truncated") or {}),
+            "historical_context_available": bool(context_history.get("available", False)),
+        },
+        "cohort_definitions": {
+            "vol_regime": "Existing recorded regime labels: low / normal / high / extreme when available.",
+            "funding_regime": "Existing recorded regime labels: contango / neutral / backwardation when available.",
+            "shock_state": "Existing recorded shock_state; otherwise deterministic shock_score buckets: normal <= 0.5, elevated <= 1.5, high > 1.5.",
+            "regime_signature": "shock_state|funding_regime|vol_regime; unavailable unless all three are known.",
+            "tariff_escalation": "Derived from existing RulesEngine thresholds: normal <= 5, elevated > 5 and <= 8, severe > 8 tariff rate-of-change.",
+            "stablecoin_health": "Uses recorded normalized stable_health when present (stress < 0.7); otherwise persisted depeg thresholds: healthy <= 20bps, warning > 20bps, alert > 50bps.",
+            "liquidity_state": "Uses recorded execution-agent depth and its recorded minimum: sufficient >= minimum, below_minimum when 0 < depth < minimum; zero is labeled zero_or_unavailable rather than healthy.",
+            "decision_quality_rate": "ALLOW is favorable when the requested-side signed return is positive; BLOCK is favorable when it is negative. Flat outcomes are not counted as favorable decisions.",
+        },
+        "interpretation": "Decision quality evaluates whether the historical ALLOW/BLOCK choice aligned with the requested side's later market move. BLOCK metrics quantify avoided adverse moves versus missed favorable moves, not realized trading P&L.",
     }
 
 
@@ -399,13 +633,6 @@ def realized_counterfactual_comparison(
         decision = str(value.get("decision") or "").lower()
         return decision if decision in {"allow", "block"} else "unknown"
 
-    def interpretation(value: str) -> str:
-        if value == "allow":
-            return "requested_side_favorable" if signed_return > 0 else "requested_side_adverse" if signed_return < 0 else "flat"
-        if value == "block":
-            return "missed_favorable_move" if signed_return > 0 else "avoided_adverse_move" if signed_return < 0 else "flat"
-        return "unavailable"
-
     warnings: list[str] = []
     if "fill_price" in (counterfactual_result.get("scenario") or {}):
         warnings.append("Counterfactual fill_price differs; realized comparison is measured from the original decision reference price.")
@@ -418,8 +645,8 @@ def realized_counterfactual_comparison(
         "return_basis": "original_decision_reference_price",
         "realized_signed_return": signed_return,
         "market_classification": outcome.get("classification"),
-        "original": {"action": original_action, "interpretation": interpretation(original_action)},
-        "counterfactual": {"action": counterfactual_action, "interpretation": interpretation(counterfactual_action)},
+        "original": {"action": original_action, "interpretation": interpret_action_against_outcome(original_action, signed_return)},
+        "counterfactual": {"action": counterfactual_action, "interpretation": interpret_action_against_outcome(counterfactual_action, signed_return)},
         "warnings": warnings,
         "research_only": True,
     }
