@@ -56,6 +56,11 @@ _VOL_REGIMES = {"low", "normal", "high", "extreme", "low_volatility", "normal_vo
 _INTEGRITY = {"OK", "WARNING", "ERROR", "UNKNOWN"}
 
 
+def counterfactual_numeric_fields() -> tuple[str, ...]:
+    """Public ordered numeric allowlist for bounded sensitivity research."""
+    return tuple(sorted(_NUMERIC_FIELDS))
+
+
 def _active(spec: Any) -> bool:
     return isinstance(spec, dict) and spec.get("status") != "not_used"
 
@@ -236,19 +241,23 @@ def _apply_execution(inputs: dict[str, Any], field: str, value: Any, applied: di
         agent_proposed = agent.get("proposed") if _active(agent) else None
         if field == "fill_price":
             if isinstance(order, dict) and "price" in order:
-                original = order["price"]; order["price"] = value
+                original = order["price"]
+                order["price"] = value
                 _record_change(applied, field, "execution_boundary", "execution_boundary.data.order.price", original, value)
             for component, spec, path in (("risk", proposed, "risk.proposed_action.price"), ("execution_agent", agent_proposed, "execution_boundary.agent.proposed.price")):
                 if isinstance(spec, dict) and "price" in spec:
-                    original = spec["price"]; spec["price"] = value
+                    original = spec["price"]
+                    spec["price"] = value
                     _record_change(applied, field, component, path, original, value)
         else:
             if isinstance(order, dict) and "size" in order:
-                original = order["size"]; order["size"] = value
+                original = order["size"]
+                order["size"] = value
                 _record_change(applied, field, "execution_boundary", "execution_boundary.data.order.size", original, value)
             for component, spec, path in (("risk", proposed, "risk.proposed_action.size"), ("execution_agent", agent_proposed, "execution_boundary.agent.proposed.size")):
                 if isinstance(spec, dict) and "size" in spec:
-                    original = spec["size"]; spec["size"] = value
+                    original = spec["size"]
+                    spec["size"] = value
                     _record_change(applied, field, component, path, original, value)
 
         price = float(data.get("fill_price") or 0.0)
@@ -278,28 +287,41 @@ def _apply_scenario(record: dict[str, Any], scenario: dict[str, Any]) -> tuple[d
     return mutated, applied, not_applicable
 
 
-def counterfactual_decision(
+def prepare_counterfactual(
     record: dict[str, Any],
-    scenario: dict[str, Any],
     *,
     model_loader: Callable[[str], Any] | None = None,
 ) -> dict[str, Any]:
-    """Recompute one immutable historical decision under explicit what-if inputs."""
-    clean = _validate_scenario(scenario)
+    """Verify exact replay once and return reusable immutable baseline facts."""
     baseline = replay_decision(record, model_loader=model_loader)
     if not baseline.get("exact_match"):
         raise CounterfactualUnavailable(
             "baseline decision must replay exactly before counterfactual analysis"
             + (f": {baseline.get('reason')}" if baseline.get("reason") else "")
         )
+    return {
+        "record": record,
+        "model_loader": model_loader,
+        "baseline": baseline,
+        "original": baseline["replayed_decision"],
+    }
+
+
+def counterfactual_from_prepared(prepared: dict[str, Any], scenario: dict[str, Any]) -> dict[str, Any]:
+    """Recompute one scenario from a previously exact-verified baseline."""
+    clean = _validate_scenario(scenario)
+    record = prepared.get("record")
+    baseline = prepared.get("baseline") or {}
+    if not isinstance(record, dict) or not baseline.get("exact_match"):
+        raise CounterfactualUnavailable("prepared counterfactual baseline is invalid")
 
     mutated, applied, not_applicable = _apply_scenario(record, clean)
     try:
-        counterfactual = recompute_decision(mutated, model_loader=model_loader)
+        counterfactual = recompute_decision(mutated, model_loader=prepared.get("model_loader"))
     except (ReplayUnavailable, ValueError, TypeError) as exc:
         raise CounterfactualUnavailable(str(exc)) from exc
 
-    original = baseline["replayed_decision"]
+    original = prepared.get("original") or baseline["replayed_decision"]
     counterfactual_state = canonical_decision_state(counterfactual)
     differences = structured_diff(original, counterfactual_state)
     original_final = original.get("final_decision") or {}
@@ -331,3 +353,14 @@ def counterfactual_decision(
             "changed_fields": len(differences),
         },
     }
+
+
+def counterfactual_decision(
+    record: dict[str, Any],
+    scenario: dict[str, Any],
+    *,
+    model_loader: Callable[[str], Any] | None = None,
+) -> dict[str, Any]:
+    """Backward-compatible single counterfactual replay."""
+    prepared = prepare_counterfactual(record, model_loader=model_loader)
+    return counterfactual_from_prepared(prepared, scenario)
