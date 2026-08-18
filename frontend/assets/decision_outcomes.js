@@ -102,16 +102,26 @@
     wrapper.querySelector('[data-load-decision-outcomes]').addEventListener('click', loadSelectedOutcomes);
   }
 
+  function sampleBadge(metric) {
+    if (!metric || !metric.sample_warning) return '';
+    return `<span style="display:inline-block;margin-left:6px;padding:2px 6px;border:1px solid var(--border-color);border-radius:999px;font-size:10px;font-weight:700">${escapeHtml(metric.sample_warning.replaceAll('_', ' '))}</span>`;
+  }
+
   function summaryCards(metric) {
     metric = metric || {};
     return `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin:10px 0">
-        <div class="card" style="padding:9px"><div class="metric-label">Evaluated</div><strong>${Number(metric.evaluated_count || 0)}</strong></div>
+        <div class="card" style="padding:9px"><div class="metric-label">Evaluated ${sampleBadge(metric)}</div><strong>${Number(metric.evaluated_count || 0)} / ${Number(metric.sample_count || 0)}</strong></div>
+        <div class="card" style="padding:9px"><div class="metric-label">Coverage</div><strong>${pct(metric.coverage_rate)}</strong></div>
+        <div class="card" style="padding:9px"><div class="metric-label">Missing</div><strong>${Number(metric.missing_count || 0)} (${pct(metric.missing_rate)})</strong></div>
         <div class="card" style="padding:9px"><div class="metric-label">Decision Quality</div><strong>${pct(metric.decision_quality_rate)}</strong></div>
+        <div class="card" style="padding:9px"><div class="metric-label">Mean Signed Return</div><strong>${pct(metric.average_signed_return)}</strong></div>
+        <div class="card" style="padding:9px"><div class="metric-label">Median Signed Return</div><strong>${pct(metric.median_signed_return)}</strong></div>
+        <div class="card" style="padding:9px"><div class="metric-label">25th Percentile</div><strong>${pct(metric.signed_return_p25)}</strong></div>
+        <div class="card" style="padding:9px"><div class="metric-label">75th Percentile</div><strong>${pct(metric.signed_return_p75)}</strong></div>
+        <div class="card" style="padding:9px"><div class="metric-label">Std Dev</div><strong>${pct(metric.signed_return_stddev)}</strong></div>
         <div class="card" style="padding:9px"><div class="metric-label">ALLOW</div><strong>${Number(metric.allow_count || 0)}</strong></div>
         <div class="card" style="padding:9px"><div class="metric-label">BLOCK</div><strong>${Number(metric.block_count || 0)}</strong></div>
-        <div class="card" style="padding:9px"><div class="metric-label">Side Favorable</div><strong>${pct(metric.requested_side_favorable_rate)}</strong></div>
-        <div class="card" style="padding:9px"><div class="metric-label">Avg Signed Return</div><strong>${pct(metric.average_signed_return)}</strong></div>
         <div class="card" style="padding:9px"><div class="metric-label">BLOCK Avoided Adverse</div><strong>${pct(metric.block_avoided_adverse_move_rate)}</strong></div>
         <div class="card" style="padding:9px"><div class="metric-label">BLOCK Opportunity Cost</div><strong>${pct(metric.block_opportunity_cost_rate)}</strong></div>
       </div>`;
@@ -119,18 +129,21 @@
 
   function groupTable(title, groups) {
     const rows = Object.entries(groups || {}).map(([key, metric]) => `<tr>
-      <td>${escapeHtml(key)}</td>
-      <td>${Number(metric.evaluated_count || 0)}</td>
+      <td>${escapeHtml(key)}${sampleBadge(metric)}</td>
+      <td>${Number(metric.evaluated_count || 0)} / ${Number(metric.sample_count || 0)}</td>
+      <td>${pct(metric.coverage_rate)}</td>
       <td>${pct(metric.decision_quality_rate)}</td>
       <td>${pct(metric.average_signed_return)}</td>
-      <td>${Number(metric.allow_count || 0)}</td>
-      <td>${Number(metric.block_count || 0)}</td>
+      <td>${pct(metric.median_signed_return)}</td>
+      <td>${pct(metric.signed_return_p25)}</td>
+      <td>${pct(metric.signed_return_p75)}</td>
+      <td>${pct(metric.signed_return_stddev)}</td>
       <td>${pct(metric.block_avoided_adverse_move_rate)}</td>
       <td>${pct(metric.block_opportunity_cost_rate)}</td>
     </tr>`).join('');
     if (!rows) return '';
     return `<h4 style="margin:12px 0 6px">${escapeHtml(title)}</h4><div class="table-scroll"><table>
-      <thead><tr><th>Group</th><th>Evaluated</th><th>Decision Quality</th><th>Avg Signed</th><th>ALLOW</th><th>BLOCK</th><th>BLOCK Avoided</th><th>BLOCK Opp Cost</th></tr></thead>
+      <thead><tr><th>Group</th><th>Evaluated / n</th><th>Coverage</th><th>Decision Quality</th><th>Mean</th><th>Median</th><th>P25</th><th>P75</th><th>Std Dev</th><th>BLOCK Avoided</th><th>BLOCK Opp Cost</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   }
 
@@ -164,9 +177,10 @@
     const decay = payload.performance_decay || {};
     const regimes = payload.performance_by_regime || {};
     const cohorts = payload.performance_by_cohort || {};
+    const batching = payload.outcome_evaluation || {};
     result.innerHTML = `
       <div class="replay-verdict ${payload.status === 'available' ? 'match' : 'mismatch'}">${escapeHtml(String(payload.status || 'unavailable').toUpperCase())}</div>
-      <div style="font-size:11px;color:var(--text-muted);margin-top:6px">Primary horizon: ${escapeHtml(primary)} · Final execution decisions scanned: ${Number(payload.decision_count || 0)}</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:6px">Primary horizon: ${escapeHtml(primary)} · Final execution decisions scanned: ${Number(payload.decision_count || 0)} · Outcome market queries: ${Number(batching.query_count || 0)}${batching.batch_fallback ? ' (bounded fallback)' : ''}</div>
       ${summaryCards(metric)}
       ${groupTable('By Volatility Regime', regimes.vol_regime || payload.performance_by_vol_regime)}
       ${groupTable('By Funding Regime', regimes.funding_regime)}
@@ -182,8 +196,8 @@
       ${coveragePanel(payload.context_coverage)}
       <h4 style="margin:12px 0 6px">Performance Decay</h4>
       <pre style="white-space:pre-wrap;font-size:11px">${escapeHtml(JSON.stringify(decay, null, 2))}</pre>
-      <div style="font-size:11px;color:var(--text-muted);margin-top:8px">Decision Quality = ALLOW followed by a favorable requested-side move, or BLOCK followed by an adverse requested-side move. Flat outcomes do not count as favorable decisions.</div>
-      <div class="audit-only-banner" style="margin-top:10px"><strong>DECISION PERFORMANCE RESEARCH ONLY</strong> — Cohorts describe persisted decision-time context and later market moves. They do not rewrite decisions, optimize thresholds, or claim blocked trades produced realized P&amp;L.</div>`;
+      <div style="font-size:11px;color:var(--text-muted);margin-top:8px">Decision Quality = ALLOW followed by a favorable requested-side move, or BLOCK followed by an adverse requested-side move. Flat outcomes do not count as favorable decisions. LOW SAMPLE warnings are descriptive guardrails, not significance tests.</div>
+      <div class="audit-only-banner" style="margin-top:10px"><strong>DECISION PERFORMANCE RESEARCH ONLY</strong> — Cohorts describe persisted decision-time context and later market moves. Distribution statistics are descriptive only; they do not rewrite decisions, optimize thresholds, or claim blocked trades produced realized P&amp;L.</div>`;
   }
 
   async function loadPerformance() {
