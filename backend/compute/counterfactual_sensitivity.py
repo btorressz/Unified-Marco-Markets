@@ -16,7 +16,6 @@ from backend.compute.counterfactual_replay import (
     counterfactual_numeric_fields,
     prepare_counterfactual,
 )
-from backend.compute.decision_outcomes import interpret_action_against_outcome
 
 MAX_SENSITIVITY_CELLS = 100
 MAX_AXIS_POINTS = 50
@@ -59,6 +58,14 @@ def _decision_label(final: dict[str, Any] | None) -> str:
         return "allow" if final["allowed"] else "block"
     value = str(final.get("decision") or "").lower().strip()
     return value if value in {"allow", "block"} else "unknown"
+
+
+def _interpret_action(action: str, signed_return: float) -> str:
+    if action == "allow":
+        return "requested_side_favorable" if signed_return > 0 else "requested_side_adverse" if signed_return < 0 else "flat"
+    if action == "block":
+        return "missed_favorable_move" if signed_return > 0 else "avoided_adverse_move" if signed_return < 0 else "flat"
+    return "unavailable"
 
 
 def _compact_point(result: dict[str, Any], scenario: dict[str, Any]) -> dict[str, Any]:
@@ -130,7 +137,7 @@ def _realized_overlay(
         "horizon": horizon,
         "realized_signed_return": signed_return,
         "market_classification": outcome.get("classification"),
-        "interpretation": interpret_action_against_outcome(point.get("decision"), signed_return),
+        "interpretation": _interpret_action(str(point.get("decision") or "unknown"), signed_return),
         "return_basis": "original_decision_reference_price",
     }
 
@@ -171,7 +178,6 @@ def counterfactual_sensitivity(
         warnings.append("Realized overlay remains measured from the original decision reference price when fill_price is varied.")
 
     matrix: list[list[dict[str, Any]]] = []
-    flat_points: list[dict[str, Any]] = []
     y_values = y_axis["values"] if y_axis else [None]
     for y_value in y_values:
         row: list[dict[str, Any]] = []
@@ -189,7 +195,6 @@ def counterfactual_sensitivity(
             if overlay is not None:
                 point["realized_outcome"] = overlay
             row.append(point)
-            flat_points.append(point)
         matrix.append(row)
 
     result: dict[str, Any] = {
