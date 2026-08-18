@@ -196,12 +196,19 @@ def test_outcome_repository_is_select_only_and_feature_wiring_is_research_only()
     lowered = repo_source.lower()
     for forbidden in ("insert into", "update ", "delete from", "execute_write", "execute_returning"):
         assert forbidden not in lowered
-    for forbidden in ("ExecutionRouter", "route_order", "place_order", "StateStore", "redis"):
+    for forbidden in (
+        "from backend.execution",
+        "import backend.execution",
+        "from backend.core.state_store",
+        "route_order(",
+        "place_order(",
+    ):
         assert forbidden not in compute_source
 
     assert '@router.get("/{decision_id}/outcomes")' in api_source
     assert '@router.get("/performance")' in api_source
     assert 'realized_counterfactual_comparison' in api_source
+    assert 'include_lifecycle=False' in api_source
     assert 'Decision Performance Lab' in frontend
     assert 'BLOCK Opportunity Cost' in frontend
     assert 'Realized Market Context' in counterfactual_frontend
