@@ -49,6 +49,7 @@ class IngestRunContext:
     def status(self) -> str:
         if self.fallback_used: return "fallback"
         if self.provider_success is False: return "failure"
+        if self.provider_success is True and self.metadata.get("partial_provider_failure"): return "partial"
         if self.provider_success is True and self.records_received and not self.records_persisted: return "partial"
         return "success" if self.provider_success is True else "failure"
 
