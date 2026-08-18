@@ -177,10 +177,14 @@ class StateStore:
                 return None
             try:
                 value = json.loads(raw)
-                return value if isinstance(value, dict) else {"value": value}
             except (json.JSONDecodeError, TypeError):
-                # Backward compatibility with pre-PR #9 keys stored as "1".
-                return {"state": "claimed", "value": raw}
+                value = raw
+            if isinstance(value, dict):
+                return value
+            # Backward compatibility with pre-PR #9 scalar claims such as "1".
+            # Any existing legacy scalar represented a claimed key; normalize it
+            # at the state-store boundary so all callers see the canonical shape.
+            return {"state": "claimed", "value": value}
         except Exception as exc:
             self._runtime.mark_failure(exc)
             logger.warning("Failed to get idempotency key=%s", key, exc_info=True)
