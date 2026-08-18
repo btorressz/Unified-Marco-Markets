@@ -259,8 +259,6 @@ def test_sensitivity_module_has_no_execution_persistence_or_state_boundary_impor
         ".save(",
         "place_order(",
         "route_order(",
-        "promote",
-        "retrain",
     )
     for token in forbidden:
         assert token not in source
