@@ -7,18 +7,29 @@ import pandas as pd
 from backend.config import GDELT_KEYWORDS
 from backend.core.event_bus import EventBus, EventType
 from backend.core.state_store import StateStore
+from backend.data.repositories.ingest_repo import IngestRepository
+from backend.ingest.quality import observation_quality
+from backend.compute.geopolitical_evidence import evidence_id, normalize_evidence_document
 
 logger = logging.getLogger(__name__)
 
 GDELT_DOC_API = "https://api.gdeltproject.org/api/v2/doc/doc"
 SHOCK_THRESHOLD = 5.0
+GDELT_SOURCE_ID = "gdelt_macro_news"
+MAX_EVIDENCE_DOCUMENTS = 20
 
 
 class GDELTIngestor:
 
-    def __init__(self, event_bus: EventBus | None = None, state_store: StateStore | None = None):
+    def __init__(
+        self,
+        event_bus: EventBus | None = None,
+        state_store: StateStore | None = None,
+        ingest_repo: IngestRepository | None = None,
+    ):
         self.event_bus = event_bus or EventBus()
         self.state_store = state_store or StateStore()
+        self.ingest_repo = ingest_repo or IngestRepository()
         self._last_shock_score: float = 0.0
 
     async def fetch_articles(
@@ -60,13 +71,14 @@ class GDELTIngestor:
                     run_context.record_received(len(df))
                     run_context.metadata["records_processed"] = len(df)
                 shock_score = self._compute_shock_score(df)
+                persisted = self._persist_evidence(df, run_context=run_context, query_str=query_str)
                 self._store_results(df, shock_score)
-                # GDELT stores one aggregate Redis snapshot (article_count +
-                # shock_score), not N durable article rows. Count the actual
-                # persisted artifact honestly and preserve N as processed
-                # metadata above.
                 if run_context:
-                    run_context.record_persisted(1)
+                    # The aggregate Redis snapshot is one persisted artifact;
+                    # durable document evidence is counted separately when the
+                    # provenance ledger is available.
+                    run_context.record_persisted(1 + persisted)
+                    run_context.metadata["evidence_documents_persisted"] = persisted
                 self._check_shock_spike(shock_score)
                 return df
         except Exception as exc:
@@ -79,7 +91,10 @@ class GDELTIngestor:
         records = []
         for art in articles:
             tone_str = art.get("tone", "0,0,0,0,0,0,0")
-            tone_parts = [float(x) for x in str(tone_str).split(",")[:7]] if tone_str else [0.0] * 7
+            try:
+                tone_parts = [float(x) for x in str(tone_str).split(",")[:7]] if tone_str else [0.0] * 7
+            except (TypeError, ValueError):
+                tone_parts = [0.0] * 7
             records.append({
                 "url": art.get("url", ""),
                 "title": art.get("title", ""),
@@ -104,10 +119,57 @@ class GDELTIngestor:
         score = avg_neg_tone * (1 + article_count / 100.0)
         return round(score, 3)
 
+    def _persist_evidence(self, df: pd.DataFrame, *, run_context=None, query_str: str = "") -> int:
+        if not run_context or not getattr(run_context, "run_id", None) or df.empty:
+            return 0
+        persisted = 0
+        for row in df.head(MAX_EVIDENCE_DOCUMENTS).to_dict(orient="records"):
+            document = normalize_evidence_document(row)
+            quality = observation_quality(
+                source="GDELT",
+                source_id=GDELT_SOURCE_ID,
+                available=True,
+                authoritative=False,
+                execution_eligible=False,
+                synthetic=False,
+                degraded=False,
+                as_of=row.get("seendate"),
+                transformation="gdelt_document_normalization",
+                transformation_version=1,
+            )
+            try:
+                saved = self.ingest_repo.record_source_observation(
+                    ingest_run_id=run_context.run_id,
+                    source_id=GDELT_SOURCE_ID,
+                    artifact_type="gdelt_article_evidence",
+                    artifact_key=document["evidence_id"],
+                    observation=document,
+                    quality=quality,
+                    lineage={
+                        "provider": "GDELT DOC API",
+                        "transformation": "gdelt_document_normalization",
+                        "transformation_version": 1,
+                        "query": query_str[:1000],
+                    },
+                    received_at=getattr(run_context, "received_at", None),
+                )
+                persisted += int(bool(saved))
+            except Exception:
+                logger.warning("Failed to persist GDELT evidence document", exc_info=True)
+        return persisted
+
     def _store_results(self, df: pd.DataFrame, shock_score: float) -> None:
+        evidence_documents = [
+            normalize_evidence_document(row)
+            for row in df.head(MAX_EVIDENCE_DOCUMENTS).to_dict(orient="records")
+        ]
         self.state_store.set_snapshot("gdelt:latest", {
             "article_count": len(df),
             "shock_score": shock_score,
+            "evidence_documents": evidence_documents,
+            "evidence_count": len(evidence_documents),
+            "evidence_authoritative": False,
+            "evidence_type": "news_context",
             "ts": datetime.now(timezone.utc).isoformat(),
         }, ttl=600)
 

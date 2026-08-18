@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from backend.compute.geopolitical_evidence import expected_impact_evidence
+
 ASSET_MAP = {
     "SPY": ("equity", "Broad Market"), "QQQ": ("equity", "Technology"), "IWM": ("equity", "Small Caps"),
     "SMH": ("etf", "Semiconductors"), "SOXX": ("etf", "Semiconductors"), "XLE": ("etf", "Energy"), "XLI": ("etf", "Industrials"), "XRT": ("etf", "Retail"), "ITA": ("etf", "Defense"), "GLD": ("etf", "Gold"), "SLV": ("etf", "Silver"), "USO": ("etf", "Oil"),
@@ -20,6 +22,7 @@ def estimate_market_impact(index: dict[str, Any] | None = None, events: list[dic
     idx = index or {}
     score = float(idx.get("overall_score", 45.0) or 45.0)
     event_ids = [e.get("event_id") for e in (events or [])[:5]]
+    evidence = expected_impact_evidence(related_events=events)
     rows = []
     for asset, (asset_class, sector) in ASSET_MAP.items():
         defensive = asset in DEFENSIVE
@@ -31,5 +34,13 @@ def estimate_market_impact(index: dict[str, Any] | None = None, events: list[dic
             direction = "bullish" if score >= 45 else "neutral"
         else:
             direction = "bearish" if score >= 45 else "neutral"
-        rows.append({"asset": asset, "asset_class": asset_class, "sector": sector, "impact_score": round(impact, 2), "direction": direction, "confidence": idx.get("confidence", 0.62), "reasons": [f"Geopolitical index {score:.1f}", f"{sector} mapping"], "related_events": event_ids, "suggested_risk_action": "reduce_or_hedge" if direction == "bearish" and impact >= 50 else "monitor_or_use_as_hedge" if direction == "bullish" else "monitor"})
-    return {"impacts": rows, "count": len(rows), "data_quality": idx.get("data_quality", "degraded"), "timestamp": _now()}
+        rows.append({
+            "asset": asset, "asset_class": asset_class, "sector": sector,
+            "impact_score": round(impact, 2), "direction": direction,
+            "confidence": idx.get("confidence", 0.62),
+            "reasons": [f"Geopolitical index {score:.1f}", f"{sector} mapping"],
+            "related_events": event_ids,
+            "suggested_risk_action": "reduce_or_hedge" if direction == "bearish" and impact >= 50 else "monitor_or_use_as_hedge" if direction == "bullish" else "monitor",
+            **evidence,
+        })
+    return {"impacts": rows, "count": len(rows), "data_quality": idx.get("data_quality", "degraded"), "timestamp": _now(), **evidence}

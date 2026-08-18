@@ -76,11 +76,14 @@ def test_context_failure_and_error_messages_are_bounded():
     assert len(sanitize_error("x" * 3000)) == 1500
 
 
-def test_gdelt_counts_processed_articles_separately_from_persisted_summary():
+def test_gdelt_counts_processed_articles_and_bounded_evidence_separately():
     gdelt = _source("backend/ingest/gdelt_ingest.py")
     assert 'run_context.metadata["records_processed"] = len(df)' in gdelt
-    assert "run_context.record_persisted(1)" in gdelt
+    assert 'run_context.metadata["evidence_documents_persisted"] = persisted' in gdelt
+    assert "run_context.record_persisted(1 + persisted)" in gdelt
     assert "run_context.record_persisted(len(df))" not in gdelt
+    assert "MAX_EVIDENCE_DOCUMENTS = 20" in gdelt
+    assert 'artifact_type="gdelt_article_evidence"' in gdelt
     assert 'self.state_store.set_snapshot("gdelt:latest"' in gdelt
 
 
