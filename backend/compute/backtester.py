@@ -516,6 +516,8 @@ def _run_historical_backtest(
 
         if strategy == "recorded_orders" or pending is not None:
             continue
+        if strategy == "buy_hold" and not first_decision:
+            continue
         if last_decision_ts is not None and (ts - last_decision_ts).total_seconds() < decision_interval_seconds:
             continue
 
