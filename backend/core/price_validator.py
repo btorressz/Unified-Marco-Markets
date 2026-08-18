@@ -7,6 +7,8 @@ from backend.core.event_bus import EventBus, EventType
 logger = logging.getLogger(__name__)
 
 _ALERT_COOLDOWN_SECONDS = 60
+_EXECUTION_PRICE_SOURCES = {"pyth", "kraken", "coingecko"}
+_RESEARCH_PRICE_SOURCES = {"yfinance"}
 
 
 class PriceValidator:
@@ -24,15 +26,34 @@ class PriceValidator:
         pyth = prices.get("pyth", 0.0)
         kraken = prices.get("kraken", 0.0)
         coingecko = prices.get("coingecko", 0.0)
+        yfinance = prices.get("yfinance", 0.0)
 
         feed_ts = feed_timestamps or {}
         valid_prices = {key: value for key, value in prices.items() if value > 0}
+        execution_prices = {key: value for key, value in valid_prices.items() if key in _EXECUTION_PRICE_SOURCES}
+        research_prices = {key: value for key, value in valid_prices.items() if key in _RESEARCH_PRICE_SOURCES}
         deviations = {}
         warnings = []
         now = datetime.now(timezone.utc)
 
-        if len(valid_prices) < 2:
-            reason = "No prices available" if not valid_prices else "Only one valid price source available; cross-venue integrity is unverified"
+        research_corroboration = {
+            "sources": {k: round(v, 4) for k, v in research_prices.items()},
+            "execution_eligible": False,
+            "can_establish_integrity": False,
+            "deviation_bps": {},
+        }
+        if yfinance > 0 and execution_prices:
+            reference_name = "pyth" if pyth > 0 else "kraken" if kraken > 0 else "coingecko"
+            reference_price = float(execution_prices[reference_name])
+            dev = abs(yfinance - reference_price) / reference_price * 10000.0
+            research_corroboration["reference_source"] = reference_name
+            research_corroboration["deviation_bps"][f"yfinance_vs_{reference_name}"] = round(dev, 2)
+            research_corroboration["aligned"] = dev <= self.deviation_threshold_bps
+
+        # Integrity remains execution-grade. Yahoo may corroborate but never turns
+        # one or zero execution-grade sources into an OK integrity result.
+        if len(execution_prices) < 2:
+            reason = "No execution-grade prices available" if not execution_prices else "Only one execution-grade price source available; cross-venue integrity is unverified"
             self._status = "UNKNOWN"
             self._reason = reason
             self._deviations = {}
@@ -43,6 +64,8 @@ class PriceValidator:
                 "deviations": {},
                 "deviation_bps": {},
                 "prices": {k: round(v, 4) for k, v in valid_prices.items()},
+                "execution_grade_prices": {k: round(v, 4) for k, v in execution_prices.items()},
+                "research_corroboration": research_corroboration,
                 "feed_asof_ts": feed_ts,
                 "last_alert_ts": self._last_alert_ts,
                 "ts": now.isoformat(),
@@ -81,6 +104,8 @@ class PriceValidator:
             "deviations": deviations,
             "deviation_bps": deviations,
             "prices": {k: round(v, 4) for k, v in valid_prices.items()},
+            "execution_grade_prices": {k: round(v, 4) for k, v in execution_prices.items()},
+            "research_corroboration": research_corroboration,
             "feed_asof_ts": feed_ts,
             "last_alert_ts": self._last_alert_ts,
             "ts": now.isoformat(),
