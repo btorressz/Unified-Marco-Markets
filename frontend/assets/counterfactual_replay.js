@@ -51,6 +51,7 @@
         ${field('liquidity_depth', 'Liquidity depth', 'number', 'step="any" min="0"')}
         ${selectField('integrity_status', 'Price integrity', ['OK','WARNING','ERROR','UNKNOWN'])}
         ${field('daily_pnl', 'Historical daily P&L', 'number', 'step="any"')}
+        ${selectField('outcome_horizon', 'Realized outcome horizon', ['1h','4h','24h','7d'])}
       </div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:10px">
         <button type="button" data-run-counterfactual class="btn-primary">Run Counterfactual</button>
@@ -72,16 +73,40 @@
     const panel = document.getElementById(DETAIL_ID);
     const scenario = {};
     panel.querySelectorAll('[data-cf-field]').forEach(el => {
-      if (el.value === '') return;
       const name = el.getAttribute('data-cf-field');
+      if (name === 'outcome_horizon' || el.value === '') return;
       scenario[name] = el.type === 'number' ? Number(el.value) : el.value;
     });
     return scenario;
   }
 
+  function outcomeHorizonFromControls() {
+    const panel = document.getElementById(DETAIL_ID);
+    const field = panel && panel.querySelector('[data-cf-field="outcome_horizon"]');
+    return field && field.value ? field.value : '4h';
+  }
+
   function finalLabel(finalDecision) {
     const value = finalDecision || {};
     return String(value.decision || (value.allowed === true ? 'allow' : value.allowed === false ? 'block' : 'unknown')).toUpperCase();
+  }
+
+  function renderRealizedOutcome(realized) {
+    if (!realized || realized.available !== true) {
+      return `<h4>Realized Market Context</h4><div style="font-size:11px;color:var(--text-muted)">UNAVAILABLE${realized && realized.reason ? ` — ${escapeHtml(realized.reason)}` : ''}</div>`;
+    }
+    const original = realized.original || {};
+    const counter = realized.counterfactual || {};
+    const warnings = realized.warnings || [];
+    return `
+      <h4>Realized Market Context · ${escapeHtml(realized.horizon || '--')}</h4>
+      <div class="card" style="padding:10px">
+        <div style="font-size:12px">Requested-side market move: <strong>${(Number(realized.realized_signed_return || 0) * 100).toFixed(2)}%</strong></div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:5px">Original ${escapeHtml(String(original.action || '--').toUpperCase())}: ${escapeHtml(original.interpretation || '--')}</div>
+        <div style="font-size:11px;color:var(--text-muted)">Counterfactual ${escapeHtml(String(counter.action || '--').toUpperCase())}: ${escapeHtml(counter.interpretation || '--')}</div>
+        <div style="font-size:11px;color:var(--text-muted)">Return basis: ${escapeHtml(realized.return_basis || '--')}</div>
+        ${warnings.length ? `<div style="font-size:11px;color:var(--warning);margin-top:5px">${escapeHtml(warnings.join(' '))}</div>` : ''}
+      </div>`;
   }
 
   function renderResult(result) {
@@ -102,6 +127,7 @@
         <div class="card" style="padding:10px"><div style="font-size:11px;color:var(--text-muted)">ORIGINAL</div><div style="font-size:20px;font-weight:700">${escapeHtml(finalLabel(originalFinal))}</div><pre style="white-space:pre-wrap;font-size:11px">${escapeHtml(JSON.stringify(originalFinal || {}, null, 2))}</pre></div>
         <div class="card" style="padding:10px"><div style="font-size:11px;color:var(--text-muted)">COUNTERFACTUAL</div><div style="font-size:20px;font-weight:700">${escapeHtml(finalLabel(counterFinal))}</div><pre style="white-space:pre-wrap;font-size:11px">${escapeHtml(JSON.stringify(counterFinal || {}, null, 2))}</pre></div>
       </div>
+      ${renderRealizedOutcome(result.realized_outcome)}
       <h4>Applied changes</h4><pre style="white-space:pre-wrap;font-size:11px">${escapeHtml(JSON.stringify(applied, null, 2))}</pre>
       ${notApplicable.length ? `<h4>Not applicable to this decision</h4><p>${escapeHtml(notApplicable.join(', '))}</p>` : ''}
       <div style="font-size:11px;color:var(--text-muted)">Changed canonical fields: ${Number((result.effects || {}).changed_fields || 0)}</div>
@@ -120,7 +146,7 @@
       const response = await fetch(`/api/decisions/${encodeURIComponent(selectedDecisionId)}/counterfactual`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scenario }),
+        body: JSON.stringify({ scenario, outcome_horizon: outcomeHorizonFromControls() }),
       });
       let payload = null;
       try { payload = await response.json(); } catch (_) { payload = null; }
