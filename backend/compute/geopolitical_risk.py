@@ -7,6 +7,7 @@ from typing import Any
 from backend.compute.sanctions_risk import score_sanctions
 from backend.compute.conflict_escalation import score_conflicts, normalized_conflict_events
 from backend.compute.shipping_energy_risk import score_chokepoints, score_energy_shock
+from backend.ingest.quality import is_observed_snapshot
 
 
 def _now() -> str:
@@ -28,7 +29,8 @@ def _sev(score: float) -> str:
 def compute_geopolitical_index(state: dict[str, Any] | None = None) -> dict[str, Any]:
     state = state or {}
     gdelt = state.get("gdelt")
-    wits = state.get("wits")
+    raw_wits = state.get("wits")
+    wits = raw_wits if is_observed_snapshot(raw_wits) else None
     stable = state.get("stablecoin") or {}
     cross = state.get("cross_asset") or {}
     sanctions = score_sanctions(gdelt=gdelt, ofac=state.get("ofac"), wits=wits)
