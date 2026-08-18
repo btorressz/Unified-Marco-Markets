@@ -99,7 +99,7 @@ def test_wits_aggregate_is_canonical_and_legacy_alias_is_same_payload():
     assert "self.state_store.set_snapshot(WITS_AGGREGATE, payload" in text
     assert "self.state_store.set_snapshot(WITS_LATEST_LEGACY, payload" in text
     assert '"tariff_pressure": tariff_pressure' in text
-    assert '"fallback_used": fallback_used' in text
+    assert '"fallback_used": False' in text
 
 
 def test_stablecoin_health_dual_publishes_canonical_and_legacy_keys():
