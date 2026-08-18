@@ -147,22 +147,25 @@
       <tbody>${rows}</tbody></table></div>`;
   }
 
-  function coveragePanel(coverage) {
-    coverage = coverage || {};
-    const counts = coverage.available_counts || {};
-    const errors = coverage.source_errors || {};
-    const truncated = coverage.truncated || {};
+  function coveragePanel(coverage, governance) {
+    coverage = coverage || {}; governance = governance || {};
+    const available = coverage.available_counts || {}; const stale = coverage.stale_counts || {}; const unavailable = coverage.unavailable_counts || {}; const recorded = coverage.recorded_decision_counts || {};
     const total = Number(coverage.decision_count || 0);
-    const rows = Object.entries(counts).map(([field, count]) =>
-      `<tr><td>${escapeHtml(field)}</td><td>${Number(count || 0)} / ${total}</td></tr>`
-    ).join('');
+    const contexts = Array.from(new Set([...Object.keys(available), ...Object.keys(stale), ...Object.keys(unavailable), ...Object.keys(recorded)])).sort();
+    const rows = contexts.map(field => {
+      const usable = Number(available[field] || 0); const immutable = Number(recorded[field] || 0); const reconstructed = Math.max(0, usable - immutable);
+      return `<tr><td>${escapeHtml(field)}</td><td>${usable} / ${total}</td><td>${immutable}</td><td>${reconstructed}</td><td>${Number(stale[field] || 0)}</td><td>${Number(unavailable[field] || 0)}</td></tr>`;
+    }).join('');
+    const freshness = governance.freshness_policy || {};
+    const policyRows = Object.entries(freshness).map(([source, policy]) => `<div class="provenance-field"><label>${escapeHtml(source)}</label>≤ ${Number((policy || {}).max_age_seconds || 0).toLocaleString()}s</div>`).join('');
     const warnings = [];
-    if (Object.keys(errors).length) warnings.push(`Source errors: ${JSON.stringify(errors)}`);
-    if (Object.values(truncated).some(Boolean)) warnings.push(`Historical context was bounded: ${JSON.stringify(truncated)}`);
-    return `<details style="margin-top:12px">
-      <summary style="cursor:pointer;font-size:12px;font-weight:600">Cohort Context Coverage</summary>
-      <div style="font-size:11px;color:var(--text-muted);margin:6px 0">Cohorts use values recorded on the immutable decision when present; otherwise they are reconstructed from persisted observations at or before the decision timestamp. Missing context remains unavailable.</div>
-      ${rows ? `<div class="table-scroll"><table><thead><tr><th>Context</th><th>Available</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+    if (Object.keys(coverage.source_errors || {}).length) warnings.push(`Source errors: ${JSON.stringify(coverage.source_errors)}`);
+    if (Object.values(coverage.truncated || {}).some(Boolean)) warnings.push(`Historical context was bounded: ${JSON.stringify(coverage.truncated)}`);
+    return `<details style="margin-top:12px" open>
+      <summary style="cursor:pointer;font-size:12px;font-weight:600">Cohort Context Coverage &amp; Governance</summary>
+      <div class="research-warning">Immutable recorded decision context takes precedence. Fallback reconstruction is freshness governed; stale fallback observations are labeled unavailable and are not silently included in named cohorts.</div>
+      ${rows ? `<div class="table-scroll"><table><thead><tr><th>Context</th><th>Usable</th><th>Recorded</th><th>Reconstructed</th><th>Stale</th><th>Unavailable</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+      <div class="provenance-grid"><div class="provenance-field"><label>Definition version</label>${escapeHtml(governance.cohort_definition_version || '--')}</div><div class="provenance-field"><label>Freshness-policy version</label>${escapeHtml(governance.freshness_policy_version || '--')}</div>${policyRows}</div>
       ${warnings.length ? `<pre style="white-space:pre-wrap;font-size:11px">${escapeHtml(warnings.join('\n'))}</pre>` : ''}
     </details>`;
   }
@@ -193,7 +196,7 @@
       ${groupTable('By Venue', payload.performance_by_venue)}
       ${groupTable('By Heuristic Version', payload.performance_by_heuristic_version)}
       ${groupTable('By Model Version', payload.performance_by_model_version)}
-      ${coveragePanel(payload.context_coverage)}
+      ${coveragePanel(payload.context_coverage, payload.cohort_governance)}
       <h4 style="margin:12px 0 6px">Performance Decay</h4>
       <pre style="white-space:pre-wrap;font-size:11px">${escapeHtml(JSON.stringify(decay, null, 2))}</pre>
       <div style="font-size:11px;color:var(--text-muted);margin-top:8px">Decision Quality = ALLOW followed by a favorable requested-side move, or BLOCK followed by an adverse requested-side move. Flat outcomes do not count as favorable decisions. LOW SAMPLE warnings are descriptive guardrails, not significance tests.</div>

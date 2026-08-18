@@ -23,6 +23,52 @@ const UI = (() => {
     return '';
   }
 
+  function ageText(seconds) {
+    if (seconds === null || seconds === undefined || !Number.isFinite(Number(seconds))) return '--';
+    const value = Number(seconds);
+    if (value < 60) return `${Math.round(value)}s`;
+    if (value < 3600) return `${Math.round(value / 60)}m`;
+    if (value < 86400) return `${(value / 3600).toFixed(1)}h`;
+    return `${(value / 86400).toFixed(1)}d`;
+  }
+
+  function dataQualityBadges(metadata = {}) {
+    const q = metadata.quality || metadata;
+    const badges = [];
+    const add = (label, cls) => badges.push(`<span class="quality-badge ${cls}">${escapeHtml(label)}</span>`);
+    const claim = String(metadata.claim_type || q.claim_type || '').toLowerCase();
+    const unavailable = metadata.available === false || q.available === false || claim === 'unavailable';
+    const synthetic = metadata.synthetic === true || q.synthetic === true;
+    const fallback = metadata.fallback_used === true || q.research_fallback === true;
+    if (unavailable) add('UNAVAILABLE', 'unavailable');
+    else if (synthetic) add('SYNTHETIC', 'scenario');
+    else if (fallback) add('RESEARCH FALLBACK', 'research');
+    else if (claim) {
+      const labels = { observed_evidence: 'OBSERVED EVIDENCE', evidence_supported_proxy: 'EVIDENCE-SUPPORTED PROXY', composite_research_proxy: 'PROXY', expected_market_impact: 'EXPECTED IMPACT', static_mapping: 'PROXY' };
+      add(labels[claim] || claim.replace(/_/g, ' ').toUpperCase(), claim.includes('proxy') ? 'proxy' : claim.includes('scenario') ? 'scenario' : claim.includes('expected') ? 'expected' : 'observed');
+    } else if (q.observed === true) add('OBSERVED', 'observed');
+    else if (metadata.proxy === true || q.proxy === true) add('PROXY', 'proxy');
+    if (q.authoritative === true || metadata.authoritative_evidence === true) add('AUTHORITATIVE', 'authoritative');
+    else if (q.authoritative === false || metadata.authoritative_evidence === false) add('NON-AUTHORITATIVE', 'proxy');
+    if (q.execution_eligible === true) add('EXECUTION ELIGIBLE', 'observed');
+    else if (q.execution_eligible === false) add('RESEARCH ONLY', 'research');
+    const freshness = metadata.freshness_status || metadata.quality_status || q.freshness_status;
+    if (freshness) add(String(freshness).toUpperCase(), String(freshness).toLowerCase());
+    return badges.join('');
+  }
+
+  function inspectSource(sourceId) {
+    const tab = document.querySelector('.tab-btn[data-tab="equities"]');
+    if (tab) tab.click();
+    setTimeout(() => {
+      const form = document.getElementById('provenance-form');
+      if (!form) return;
+      if (form.source_id) form.source_id.value = sourceId || '';
+      form.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    }, 0);
+  }
+
   function renderFreshnessBadge(elementId, ts, thresholds) {
     const el = document.getElementById(elementId);
     if (!el) return;
@@ -167,6 +213,14 @@ const UI = (() => {
   }
 
   function renderMacroTerminal(mt) {
+    const strip = document.getElementById('tariff-provenance-strip');
+    if (strip) {
+      const source = mt.wits || mt.tariff_input || mt.quality || {};
+      const quality = source.quality || source;
+      const enough = Object.keys(quality).length > 0;
+      strip.innerHTML = enough ? `<strong>WITS input</strong>${dataQualityBadges(source)}<span class="quality-meta">Raw observation → tariff-pressure input → normalized Tariff Index. ${source.as_of || mt.ts ? `As of ${escapeHtml(source.as_of || mt.ts)}` : ''} ${source.age_seconds != null ? `· Age ${ageText(source.age_seconds)}` : ''} · <button class="quality-link" data-inspect-source="wits_tariffs">Inspect source →</button></span>` : '<span class="quality-meta">Normalized index; source metadata unavailable.</span>';
+      const button = strip.querySelector('[data-inspect-source]'); if (button) button.addEventListener('click', () => inspectSource('wits_tariffs'));
+    }
     const freshnessEl = document.getElementById('macro-terminal-freshness');
     if (freshnessEl) {
       if (mt.ts) {
@@ -426,76 +480,49 @@ const UI = (() => {
   function renderStablecoinsTab(data) {
     if (data.health) {
       const h = data.health;
-      const stables = h.stablecoins || [];
+      const stableMap = h.health || h;
+      const stables = Array.isArray(stableMap.stablecoins) ? stableMap.stablecoins : Object.entries(stableMap).filter(([, v]) => v && typeof v === 'object').map(([symbol, value]) => ({ symbol, ...value }));
       stables.forEach(s => {
+        const available = s.available === true && s.price !== null && s.price !== undefined && s.depeg_bps !== null && s.depeg_bps !== undefined;
+        const depeg = available ? Math.abs(Number(s.depeg_bps)) : null;
         const sym = (s.symbol || '').toLowerCase();
         const box = document.getElementById('stable-' + sym);
         if (box) {
-          const depeg = Math.abs(s.depeg_bps || 0);
-          const color = depeg > 50 ? 'red' : depeg > 10 ? 'yellow' : 'green';
-          box.querySelector('.metric-value').textContent = '$' + formatNumber(s.price, 4);
-          box.querySelector('.metric-value').className = 'metric-value ' + color;
-          box.querySelector('.metric-sublabel').textContent = formatNumber(depeg, 1) + ' bps depeg';
+          const value = box.querySelector('.metric-value'); const sub = box.querySelector('.metric-sublabel'); const quality = box.querySelector('.stable-quality');
+          if (!available) {
+            value.textContent = '--'; value.className = 'metric-value'; sub.textContent = 'UNAVAILABLE';
+            quality.innerHTML = `<div class="quality-strip">${dataQualityBadges(s)}<span class="quality-meta">No observed Pyth/Kraken price available</span></div>`;
+          } else {
+            const color = depeg > 50 ? 'red' : depeg > 10 ? 'yellow' : 'green';
+            value.textContent = '$' + formatNumber(s.price, 4); value.className = 'metric-value ' + color; sub.textContent = formatNumber(depeg, 1) + ' bps depeg';
+            quality.innerHTML = `<div class="quality-strip">${dataQualityBadges(s)}<span class="quality-meta">Source ${escapeHtml(s.source || '--')} · As of ${escapeHtml(s.as_of || '--')} · Age ${ageText(s.age_seconds)}</span></div>`;
+          }
         }
       });
-
       const heatTbody = document.querySelector('#depeg-heatmap tbody');
       if (heatTbody) {
-        heatTbody.innerHTML = '';
-        stables.forEach(s => {
-          const depeg = Math.abs(s.depeg_bps || 0);
-          const cls = depeg > 50 ? 'badge-red' : depeg > 10 ? 'badge-yellow' : 'badge-green';
-          const status = depeg > 50 ? 'DEPEGGING' : depeg > 10 ? 'STRESSED' : 'STABLE';
-          const tr = document.createElement('tr');
-          tr.innerHTML = `<td>${s.symbol}</td><td>${formatPrice(s.price)}</td><td>${formatNumber(depeg, 1)}</td><td><span class="badge ${cls}">${status}</span></td>`;
-          heatTbody.appendChild(tr);
-        });
+        heatTbody.innerHTML = stables.map(s => {
+          const available = s.available === true && s.price != null && s.depeg_bps != null;
+          if (!available) return `<tr><td>${escapeHtml(s.symbol)}</td><td>--</td><td>--</td><td><span class="quality-badge unavailable">UNAVAILABLE</span></td></tr>`;
+          const depeg = Math.abs(Number(s.depeg_bps)); const cls = depeg > 50 ? 'badge-red' : depeg > 10 ? 'badge-yellow' : 'badge-green'; const status = depeg > 50 ? 'DEPEGGING' : depeg > 10 ? 'STRESSED' : 'STABLE';
+          return `<tr><td>${escapeHtml(s.symbol)}</td><td>${formatPrice(s.price)}</td><td>${formatNumber(depeg, 1)}</td><td><span class="badge ${cls}">${status}</span><div class="quality-strip">${dataQualityBadges(s)}</div></td></tr>`;
+        }).join('');
       }
-
       const stressPanel = document.getElementById('stable-stress-panel');
-      if (stressPanel) {
-        const stress = h.stress_level || 'LOW';
-        const pegBreak = h.peg_break_probability || 0;
-        const stressCls = stress === 'HIGH' || stress === 'CRITICAL' ? 'red' : stress === 'MEDIUM' ? 'yellow' : 'green';
-        stressPanel.innerHTML = `
-          <div class="guardrail-row"><span class="guardrail-label">Stress Level</span><span class="guardrail-value ${stressCls}">${stress}</span></div>
-          <div class="guardrail-row"><span class="guardrail-label">Peg Break Probability</span><span class="guardrail-value">${formatNumber(pegBreak * 100, 2)}%</span></div>
-          <div class="guardrail-row"><span class="guardrail-label">Composite Score</span><span class="guardrail-value">${formatNumber(h.composite_health, 4)}</span></div>
-        `;
-      }
+      if (stressPanel) stressPanel.innerHTML = `<div class="guardrail-row"><span class="guardrail-label">Observed sources</span><span class="guardrail-value">${stables.filter(x => x.available === true).length} / ${stables.length}</span></div><div class="quality-meta">Unavailable observations are excluded from health/depeg classification.</div>`;
     }
-
     if (data.alerts) {
-      const container = document.getElementById('stable-alerts');
-      if (container) {
-        container.innerHTML = '';
-        if (data.alerts.length === 0) {
-          container.innerHTML = '<div class="empty-state"><div class="empty-state-text">No stablecoin alerts</div></div>';
-        } else {
-          data.alerts.forEach(a => {
-            const div = document.createElement('div');
-            div.className = `alert-item ${a.severity || 'warning'}`;
-            div.innerHTML = `<span class="alert-message">${a.message || a.alert_type || '--'}</span><span class="alert-time">${formatTimestamp(a.ts)}</span>`;
-            container.appendChild(div);
-          });
-        }
-      }
+      const container = document.getElementById('stable-alerts'); const alerts = data.alerts.alerts || data.alerts || [];
+      if (container) container.innerHTML = alerts.length ? alerts.map(a => `<div class="alert-item ${a.severity || 'warning'}"><span class="alert-message">${escapeHtml(a.message || a.alert_type || '--')}</span><span class="alert-time">${formatTimestamp(a.ts)}</span></div>`).join('') : '<div class="empty-state"><div class="empty-state-text">No stablecoin alerts</div></div>';
     }
-
     if (data.stableFlow) {
       const panel = document.getElementById('stable-flow-panel');
       if (panel) {
         const sf = data.stableFlow;
         const momCls = sf.stable_flow_momentum > 0.2 ? 'green' : sf.stable_flow_momentum < -0.2 ? 'red' : 'blue';
         const indCls = sf.risk_on_off_indicator === 'risk_on' ? 'green' : sf.risk_on_off_indicator === 'risk_off' ? 'red' : 'blue';
-        const drivers = (sf.drivers || []).map(d => `<div style="font-size:12px;color:var(--text-muted);margin-top:2px">- ${d}</div>`).join('');
-        panel.innerHTML = `
-          <div class="metric-row">
-            <div class="metric-box" style="flex:1"><div class="metric-label">Flow Momentum</div><div class="metric-value ${momCls}" style="font-size:18px">${formatNumber(sf.stable_flow_momentum, 4)}</div></div>
-            <div class="metric-box" style="flex:1"><div class="metric-label">Risk Signal</div><div class="metric-value ${indCls}" style="font-size:14px">${sf.risk_on_off_indicator || 'neutral'}</div></div>
-          </div>
-          <div style="margin-top:8px">${drivers}</div>
-        `;
+        const drivers = (sf.drivers || []).map(d => `<div style="font-size:12px;color:var(--text-muted);margin-top:2px">- ${escapeHtml(d)}</div>`).join('');
+        panel.innerHTML = `<div class="metric-row"><div class="metric-box" style="flex:1"><div class="metric-label">Flow Momentum</div><div class="metric-value ${momCls}" style="font-size:18px">${formatNumber(sf.stable_flow_momentum, 4)}</div></div><div class="metric-box" style="flex:1"><div class="metric-label">Risk Signal</div><div class="metric-value ${indCls}" style="font-size:14px">${escapeHtml(sf.risk_on_off_indicator || 'neutral')}</div></div></div><div style="margin-top:8px">${drivers}</div>`;
       }
     }
   }
@@ -1429,6 +1456,23 @@ const UI = (() => {
 
 
 
+  function evidenceDetail(item = {}) {
+    const evidence = item.evidence || [];
+    const limitations = item.limitations || [];
+    const basis = item.evidence_basis ? `<div class="quality-meta"><strong>Basis:</strong> ${escapeHtml(item.evidence_basis).replace(/_/g, ' ')}</div>` : '';
+    const docs = evidence.length ? `<details><summary>Evidence (${evidence.length} documents)</summary>${evidence.map(doc => `<div class="provenance-field"><strong>${escapeHtml(doc.title || doc.source || '--')}</strong><br><small>${escapeHtml(doc.seendate || doc.seen_date || doc.ts || '--')} · ${escapeHtml(doc.domain || '--')} · ${escapeHtml(doc.sourcecountry || doc.source_country || '--')} ${doc.tone != null ? `· tone ${escapeHtml(doc.tone)}` : ''}</small></div>`).join('')}</details>` : (item.evidence_count != null ? `<div class="quality-meta">Evidence: ${Number(item.evidence_count)} GDELT documents</div>` : '');
+    const warning = limitations.length ? `<div class="limitations"><strong>Limitations</strong><br>${limitations.map(escapeHtml).join('<br>')}</div>` : '';
+    return `${basis}${docs}${warning}`;
+  }
+
+  function geoSemantics(item = {}, expected = false) {
+    const meta = expected ? { ...item, claim_type: item.claim_type || 'expected_market_impact', authoritative_evidence: false } : item;
+    let badges = dataQualityBadges(meta);
+    if (expected && item.observed_market_reaction === false) badges += '<span class="quality-badge proxy">NOT OBSERVED</span>';
+    if (expected && item.causal_claim === false) badges += '<span class="quality-badge proxy">NO CAUSAL CLAIM</span>';
+    return `<div class="quality-strip">${badges}</div>${evidenceDetail(item)}`;
+  }
+
   function renderGeopoliticsTab(data) {
     data = data || {};
     const idx = data.index || {};
@@ -1438,7 +1482,7 @@ const UI = (() => {
     const cards = document.getElementById('geo-risk-cards');
     if (cards) {
       const regimeCls = idx.regime === 'crisis' || idx.regime === 'high_risk' ? 'red' : idx.regime === 'elevated' ? 'yellow' : 'green';
-      cards.innerHTML = `<div class="metric-box"><div class="metric-label">Geo Risk Index</div><div class="metric-value ${regimeCls}">${formatNumber(idx.overall_score,1)}</div></div><div class="metric-box"><div class="metric-label">Regime</div><div class="metric-value ${regimeCls}">${idx.regime || '--'}</div></div><div class="metric-box"><div class="metric-label">Confidence</div><div class="metric-value blue">${(Number(idx.confidence || 0) * 100).toFixed(0)}%</div></div><div class="metric-box"><div class="metric-label">Data Quality</div><div><span class="badge ${(idx.data_quality === 'ok' || idx.data_quality === 'healthy') ? 'badge-green' : 'badge-yellow'}">${idx.data_quality || 'degraded'}</span></div></div>`;
+      cards.innerHTML = `<div class="metric-box"><div class="metric-label">Geo Risk Index</div><div class="metric-value ${regimeCls}">${formatNumber(idx.overall_score,1)}</div></div><div class="metric-box"><div class="metric-label">Regime</div><div class="metric-value ${regimeCls}">${idx.regime || '--'}</div></div><div class="metric-box"><div class="metric-label">Confidence</div><div class="metric-value blue">${(Number(idx.confidence || 0) * 100).toFixed(0)}%</div></div><div class="metric-box"><div class="metric-label">Data Quality</div><div><span class="badge ${(idx.data_quality === 'ok' || idx.data_quality === 'healthy') ? 'badge-green' : 'badge-yellow'}">${idx.data_quality || 'degraded'}</span><div>${geoSemantics(idx)}</div></div></div>`;
     }
     const comp = document.getElementById('geo-component-panel');
     if (comp) comp.innerHTML = `<div class="table-scroll"><table><thead><tr><th>Component</th><th>Score</th></tr></thead><tbody>${components.map(c => `<tr><td>${c[0]}</td><td>${formatNumber(c[1],1)}</td></tr>`).join('')}</tbody></table></div>`;
@@ -1451,7 +1495,7 @@ const UI = (() => {
     const events = document.getElementById('geo-events-panel');
     if (events) {
       const rows = (data.events || {}).events || [];
-      events.innerHTML = `<div class="card-header"><span class="card-title">Geopolitical Events Feed</span></div><div class="table-scroll"><table><thead><tr><th>Type</th><th>Title</th><th>Region</th><th>Severity</th></tr></thead><tbody>${rows.slice(0,10).map(e => `<tr><td>${e.event_type}</td><td>${e.title}</td><td>${e.region}</td><td><span class="badge ${e.severity === 'critical' || e.severity === 'crisis' || e.severity === 'high' ? 'badge-red' : 'badge-yellow'}">${e.severity}</span></td></tr>`).join('') || '<tr><td colspan="4">No events</td></tr>'}</tbody></table></div>`;
+      events.innerHTML = `<div class="card-header"><span class="card-title">Geopolitical Events Feed</span></div><div class="table-scroll"><table><thead><tr><th>Type</th><th>Title</th><th>Region</th><th>Severity</th></tr></thead><tbody>${rows.slice(0,10).map(e => `<tr><td>${e.event_type}</td><td>${e.title}${geoSemantics(e)}</td><td>${e.region}</td><td><span class="badge ${e.severity === 'critical' || e.severity === 'crisis' || e.severity === 'high' ? 'badge-red' : 'badge-yellow'}">${e.severity}</span></td></tr>`).join('') || '<tr><td colspan="4">No events</td></tr>'}</tbody></table></div>`;
     }
     const sanctions = document.getElementById('geo-sanctions-panel');
     if (sanctions) {
@@ -1461,12 +1505,12 @@ const UI = (() => {
     const conflict = document.getElementById('geo-conflict-panel');
     if (conflict) {
       const c = data.conflicts || {}; const rows = c.hotspots || [];
-      conflict.innerHTML = `<div class="card-header"><span class="card-title">Conflict / Escalation Monitor</span></div><div class="table-scroll"><table><thead><tr><th>Hotspot</th><th>Score</th><th>Assets</th></tr></thead><tbody>${rows.slice(0,6).map(h => `<tr><td>${h.region}</td><td>${formatNumber(h.risk_score,1)}</td><td>${(h.assets || []).slice(0,4).join(', ')}</td></tr>`).join('') || '<tr><td colspan="3">No hotspots</td></tr>'}</tbody></table></div>`;
+      conflict.innerHTML = `<div class="card-header"><span class="card-title">Conflict / Escalation Monitor</span></div><div class="table-scroll"><table><thead><tr><th>Hotspot</th><th>Score</th><th>Assets</th></tr></thead><tbody>${rows.slice(0,6).map(h => `<tr><td>${h.region}${geoSemantics(h)}</td><td>${formatNumber(h.risk_score,1)}</td><td>${(h.assets || []).slice(0,4).join(', ')}</td></tr>`).join('') || '<tr><td colspan="3">No hotspots</td></tr>'}</tbody></table></div>`;
     }
     const shipping = document.getElementById('geo-shipping-panel');
     if (shipping) {
       const rows = (data.chokepoints || {}).chokepoints || [];
-      shipping.innerHTML = `<div class="card-header"><span class="card-title">Shipping / Chokepoint Risk</span></div><div class="table-scroll"><table><thead><tr><th>Chokepoint</th><th>Region</th><th>Score</th></tr></thead><tbody>${rows.map(c => `<tr><td>${c.name}</td><td>${c.region}</td><td>${formatNumber(c.risk_score,1)}</td></tr>`).join('') || '<tr><td colspan="3">No chokepoint data</td></tr>'}</tbody></table></div>`;
+      shipping.innerHTML = `<div class="card-header"><span class="card-title">Shipping / Chokepoint Risk</span></div><div class="table-scroll"><table><thead><tr><th>Chokepoint</th><th>Region</th><th>Score</th></tr></thead><tbody>${rows.map(c => `<tr><td>${c.name}${geoSemantics(c)}</td><td>${c.region}</td><td>${formatNumber(c.risk_score,1)}</td></tr>`).join('') || '<tr><td colspan="3">No chokepoint data</td></tr>'}</tbody></table></div>`;
     }
     const energy = document.getElementById('geo-energy-panel');
     if (energy) {
@@ -1476,7 +1520,7 @@ const UI = (() => {
     const impact = document.getElementById('geo-impact-panel');
     if (impact) {
       const rows = (data.impact || data.marketImpact || {}).impacts || [];
-      impact.innerHTML = `<div class="card-header"><span class="card-title">Market Impact Table</span></div><div class="table-scroll"><table><thead><tr><th>Asset</th><th>Class</th><th>Impact</th><th>Direction</th><th>Action</th></tr></thead><tbody>${rows.slice(0,18).map(r => `<tr><td>${r.asset}</td><td>${r.asset_class}</td><td>${formatNumber(r.impact_score,1)}</td><td>${r.direction}</td><td>${r.suggested_risk_action}</td></tr>`).join('') || '<tr><td colspan="5">No impact data</td></tr>'}</tbody></table></div>`;
+      impact.innerHTML = `<div class="card-header"><span class="card-title">Market Impact Table</span></div><div class="table-scroll"><table><thead><tr><th>Asset</th><th>Class</th><th>Impact</th><th>Direction</th><th>Action</th></tr></thead><tbody>${rows.slice(0,18).map(r => `<tr><td>${r.asset}</td><td>${r.asset_class}</td><td>${formatNumber(r.impact_score,1)}</td><td>${r.direction}</td><td>${r.suggested_risk_action}${geoSemantics(r, true)}</td></tr>`).join('') || '<tr><td colspan="5">No impact data</td></tr>'}</tbody></table></div>`;
     }
     renderGeoScenarioResult(data.scenarioResult);
     const prot = document.getElementById('geo-protection-panel');
@@ -1499,7 +1543,7 @@ const UI = (() => {
   function renderGeoScenarioResult(data) {
     const panel = document.getElementById('geo-scenario-result');
     if (!panel || !data) return;
-    panel.innerHTML = `<div class="metric-row"><div class="metric-box"><div class="metric-label">PnL Impact</div><div class="metric-value red">${formatPrice(data.portfolio_pnl_impact)}</div></div><div class="metric-box"><div class="metric-label">Protection</div><div class="metric-value blue">${data.protection_mode || '--'}</div></div></div><div style="font-size:12px;color:var(--text-muted)">Posture: ${data.suggested_risk_posture || '--'} · Hedges: ${(data.hedge_suggestions || []).join('; ')}</div>`;
+    panel.innerHTML = `<div class="metric-row"><div class="metric-box"><div class="metric-label">PnL Impact</div><div class="metric-value red">${formatPrice(data.portfolio_pnl_impact)}</div></div><div class="metric-box"><div class="metric-label">Protection</div><div class="metric-value blue">${data.protection_mode || '--'}</div></div></div><div style="font-size:12px;color:var(--text-muted)">Posture: ${data.suggested_risk_posture || '--'} · Hedges: ${(data.hedge_suggestions || []).join('; ')}</div>${geoSemantics({ ...data, claim_type: data.claim_type || 'scenario', authoritative_evidence: data.authoritative_evidence ?? false })}`;
   }
 
 
@@ -1623,10 +1667,41 @@ const UI = (() => {
 
   const auditTable = (headers, rows) => `<div class="table-scroll"><table><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')||`<tr><td colspan="${headers.length}">No durable history available.</td></tr>`}</tbody></table></div>`;
   const auditValue = value => value === null || value === undefined || value === '' ? 'N/A' : escapeHtml(String(value));
-  function renderIngestionRegistry(data) { const p=document.getElementById('ingestion-registry-panel'); if(!p)return; p.innerHTML=auditTable(['Source','Provider','Category','Cadence','Authoritative','Fallback Chain','Storage'],(data.sources||[]).map(s=>`<tr><td>${auditValue(s.source_id)}</td><td>${auditValue(s.provider)}</td><td>${auditValue(s.category)}</td><td>${auditValue(s.expected_cadence_seconds)}s</td><td>${s.authoritative?'Yes':'No'}</td><td>${auditValue((s.fallback_chain||[]).join(' → '))}</td><td>${auditValue(s.storage_target)}</td></tr>`)); }
-  function renderIngestionStatus(data) { const p=document.getElementById('ingestion-status-panel'); if(!p)return; p.innerHTML=auditTable(['Source','Status','Freshness','Last Attempt','Last Success','Latency','Success Rate','Failure Streak','Received','Persisted','Fallback'],(data.sources||[]).map(s=>{const badge=s.status==='success'?'HEALTHY':s.status==='fallback'?'FALLBACK':s.status==='failure'?'FAILING':s.status?'DEGRADED':'NO HISTORY';return `<tr><td>${auditValue(s.source_id)}<br><small>${auditValue(s.provider)}</small></td><td><span class="source-status-badge ${badge.toLowerCase().replace(' ','-')}">${badge}</span></td><td>${s.freshness_age_seconds==null?'N/A':auditValue(s.freshness_age_seconds)+'s'}</td><td>${auditValue(s.last_attempt)}</td><td>${auditValue(s.last_success)}</td><td>${s.last_duration_ms==null?'N/A':auditValue(Number(s.last_duration_ms).toFixed(0))+'ms'}</td><td>${s.recent_success_rate==null?'N/A':(Number(s.recent_success_rate)*100).toFixed(1)+'%'}</td><td><span class="failure-streak-badge">${auditValue(s.failure_streak)}</span></td><td>${auditValue(s.records_received)}</td><td>${auditValue(s.records_persisted)}</td><td>${s.fallback_used?`<span class="fallback-badge">${auditValue(s.fallback_source_id||'sample')}</span>`:'None'}</td></tr>`;})); }
+  let ingestionRegistry = [];
+  let ingestionStatus = [];
+  function renderJoinedIngestion() {
+    const p = document.getElementById('ingestion-registry-panel'); if (!p) return;
+    const statusById = new Map(ingestionStatus.map(row => [row.source_id, row]));
+    const sources = [...ingestionRegistry].sort((a,b) => String(a.source_id).localeCompare(String(b.source_id)));
+    const rows = sources.map(source => {
+      const current = statusById.get(source.source_id) || {};
+      const status = current.status ? String(current.status).toUpperCase() : 'NO HISTORY';
+      const merged = { ...source, ...current };
+      return `<tr><td><strong>${auditValue(source.source_id)}</strong><br><small>${auditValue(source.provider)}</small><div class="quality-strip">${dataQualityBadges(source)}</div></td><td>${auditValue(source.category)}<br><small>${auditValue(source.observation_type)}</small></td><td>${source.expected_cadence_seconds == null ? '--' : ageText(source.expected_cadence_seconds)}<br><small>age ${current.freshness_age_seconds == null ? '--' : ageText(current.freshness_age_seconds)}</small></td><td><span class="source-status-badge ${status.toLowerCase().replace(/ /g,'-')}">${auditValue(status)}</span><br><small>success ${auditValue(current.last_success)}<br>failure ${auditValue(current.last_failure)}</small></td><td>${auditValue(current.failure_streak)}<br><small>fallbacks ${auditValue(current.recent_fallback_count)}${current.fallback_used ? ` · ${auditValue(current.fallback_source_id || 'fallback')}` : ''}</small></td><td>${auditValue(current.records_received)} / ${auditValue(current.records_persisted)}</td><td>${auditValue(source.storage_target)}<br><small>contract v${auditValue(source.observation_contract_version)} · provenance ${merged.provenance_available === false ? 'unavailable' : 'available'}</small></td></tr>`;
+    });
+    p.innerHTML = auditTable(['Source / Provider','Category / Observation','Cadence / Current Age','Status / Last Runs','Failure / Fallback','Received / Persisted','Storage / Contract'], rows);
+  }
+  function renderIngestionRegistry(data) { ingestionRegistry = data.sources || []; renderJoinedIngestion(); }
+  function renderIngestionStatus(data) { ingestionStatus = data.sources || []; renderJoinedIngestion(); }
+
   function renderIngestionRuns(data) { const p=document.getElementById('ingestion-runs-panel');if(!p)return;p.innerHTML=auditTable(['Time','Source','Status','Duration','Received','Persisted','Fallback','Error'],(data.runs||[]).map(r=>`<tr><td>${auditValue(r.started_at)}</td><td>${auditValue(r.source_id)}</td><td>${auditValue(r.status)}</td><td>${r.duration_ms==null?'N/A':auditValue(Number(r.duration_ms).toFixed(0))+'ms'}</td><td>${auditValue(r.records_received)}</td><td>${auditValue(r.records_persisted)}</td><td>${r.fallback_used?auditValue(r.fallback_source_id||r.fallback_type):'None'}</td><td>${auditValue(r.error_message)}</td></tr>`)); }
-  function renderDataProvenance(data) { const p=document.getElementById('provenance-results');if(!p)return;p.innerHTML=auditTable(['Source / Run','Artifact','Provider / Received / Persisted','Fallback','Lineage'],(data.provenance||[]).map(r=>`<tr><td>${auditValue(r.source_id)}<br><small>${auditValue(r.ingest_run_id)}</small></td><td>${auditValue(r.artifact_type)} #${auditValue(r.artifact_id)}</td><td>${auditValue(r.provider_timestamp)}<br>${auditValue(r.received_at)}<br>${auditValue(r.persisted_at)}</td><td>${r.fallback_used?auditValue(r.fallback_source_id||'sample'):'None'}</td><td><details><summary>JSON lineage</summary><pre>${auditValue(JSON.stringify(r.lineage||{},null,2))}</pre></details></td></tr>`)); }
+  function renderDataProvenance(data) {
+    const p = document.getElementById('provenance-results'); if (!p) return;
+    const rows = data.provenance || [];
+    if (!rows.length) { p.innerHTML = '<div class="empty-state-text">No matching provenance records.</div>'; return; }
+    p.innerHTML = rows.map(r => {
+      const q = r.quality || {}; const metadata = r.observation || r.metadata || {}; const lineage = r.lineage || {};
+      const isWits = r.source_id === 'wits_tariffs' && r.artifact_type === 'tariff_observation';
+      const fields = [
+        ['Source', r.source_id], ['Provider', q.source || r.provider], ['Artifact', `${r.artifact_type || '--'} #${r.artifact_id || '--'}`], ['Run ID', r.ingest_run_id],
+        ['Provider timestamp', r.provider_timestamp], ['Received', r.received_at], ['Persisted', r.persisted_at], ['Age', r.age_seconds == null ? '--' : ageText(r.age_seconds)],
+        ['Fallback', r.fallback_used ? (r.fallback_source_id || 'Yes') : 'No'], ['Contract', q.contract_version || r.observation_contract_version], ['Transformation', q.transformation || lineage.transformation], ['Transformation version', q.transformation_version || lineage.transformation_version],
+      ];
+      const observationFields = isWits ? [['Reporter',metadata.reporter],['Partner',metadata.partner],['Product',metadata.product],['Year',metadata.year],['Indicator',metadata.indicator],['Observation key',metadata.observation_key],['Raw tariff observation',metadata.tariff_rate ?? metadata.value]] : Object.entries(metadata).filter(([,v]) => ['string','number','boolean'].includes(typeof v)).slice(0,10);
+      const flow = isWits ? '<div class="lineage-flow"><strong>WITS source lineage</strong><br>Raw WITS tariff observation ↓<br>normalization / transformation ↓<br>WITS aggregate / tariff-pressure input ↓<br>derived research input for the normalized Tariff Index</div>' : '';
+      return `<article class="provenance-record"><h3>${isWits ? 'WITS TARIFF OBSERVATION' : escapeHtml(r.artifact_type || 'PROVENANCE RECORD')}</h3><div class="quality-strip">${dataQualityBadges({ ...r, quality: q })}</div><div class="provenance-grid">${fields.concat(observationFields).filter(([,v]) => v !== undefined && v !== null).map(([label,value]) => `<div class="provenance-field"><label>${escapeHtml(label)}</label>${auditValue(value)}</div>`).join('')}</div>${flow}<details><summary>Structured observation metadata</summary><pre>${auditValue(JSON.stringify(metadata,null,2))}</pre></details><details><summary>Raw JSON lineage</summary><pre>${auditValue(JSON.stringify(lineage,null,2))}</pre></details></article>`;
+    }).join('');
+  }
 
   return {
     formatTimestamp,
