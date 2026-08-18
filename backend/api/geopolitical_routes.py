@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 from fastapi import APIRouter
 
+from backend.core.state_keys import WITS_AGGREGATE, WITS_LATEST_LEGACY
 from backend.core.state_store import StateStore
 from backend.compute.geopolitical_risk import compute_geopolitical_index, build_geopolitical_events
 from backend.compute.sanctions_risk import score_sanctions, sanctions_impact, sanctions_entities
@@ -11,6 +12,7 @@ from backend.compute.conflict_escalation import score_conflicts, conflict_market
 from backend.compute.shipping_energy_risk import score_chokepoints, score_energy_shock, supply_chain_impact
 from backend.compute.geopolitical_market_impact import estimate_market_impact
 from backend.compute.portfolio_protection import scenario_protection
+from backend.ingest.quality import is_observed_snapshot
 from backend.agents.geopolitical_agent import GeopoliticalAgent
 from backend.agents.sanctions_agent import SanctionsAgent
 from backend.agents.conflict_agent import ConflictAgent
@@ -23,9 +25,10 @@ _store = StateStore()
 
 def _state() -> dict[str, Any]:
     try:
+        raw_wits = _store.get_snapshot(WITS_AGGREGATE) or _store.get_snapshot(WITS_LATEST_LEGACY)
         return {
             "gdelt": _store.get_snapshot("gdelt:latest"),
-            "wits": _store.get_snapshot("wits:tariff:USA:ALL:ALL") or _store.get_snapshot("wits:latest"),
+            "wits": raw_wits if is_observed_snapshot(raw_wits) else None,
             "stablecoin": _store.get_snapshot("stablecoin:health:latest") or _store.get_snapshot("stablecoin:health"),
             "cross_asset": _store.get_snapshot("cross_asset:contagion:latest"),
         }
