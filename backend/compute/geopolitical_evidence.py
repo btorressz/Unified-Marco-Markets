@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 from typing import Any, Iterable
 
+from backend.ingest.quality import is_authoritative_observation
+
 
 CLAIM_OBSERVED = "observed_evidence"
 CLAIM_EVIDENCE_SUPPORTED_PROXY = "evidence_supported_proxy"
@@ -10,6 +12,17 @@ CLAIM_PROXY = "proxy"
 CLAIM_STATIC_MAPPING = "static_mapping"
 CLAIM_SCENARIO = "scenario"
 CLAIM_EXPECTED_IMPACT = "expected_market_impact"
+
+
+def authoritative_evidence(record: dict[str, Any] | None, *, source_id: str | None = None) -> dict[str, Any]:
+    """Describe a validated v2 provider record without changing downstream claims."""
+    observed = is_authoritative_observation(record, source_id=source_id)
+    return {
+        "claim_type": CLAIM_OBSERVED if observed else CLAIM_PROXY,
+        "observed": observed, "proxy": not observed, "scenario": False,
+        "authoritative_evidence": observed,
+        "evidence_basis": "normalized_authoritative_provider_record" if observed else "unvalidated_provider_input",
+    }
 
 
 def evidence_id(document: dict[str, Any]) -> str:

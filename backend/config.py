@@ -120,6 +120,10 @@ MAX_ORDER_SLIPPAGE_BPS: float = _env_float("MAX_ORDER_SLIPPAGE_BPS", 500.0)
 
 WITS_COUNTRIES: list[str] = _env_list("WITS_COUNTRIES", ["USA", "CHN", "EU"])
 WITS_PRODUCTS: list[str] = _env_list("WITS_PRODUCTS", ["TOTAL", "Capital", "Consumer", "Intermediate", "Raw"])
+WTO_API_KEY: str = _env("WTO_API_KEY", "")
+WTO_INDICATORS: list[str] = _env_list("WTO_INDICATORS", ["ITS_MTV_AX"])
+WTO_REPORTERS: list[str] = _env_list("WTO_REPORTERS", ["USA", "CHN", "EUN"])
+WTO_PARTNERS: list[str] = _env_list("WTO_PARTNERS", [])
 
 GDELT_KEYWORDS: list[str] = _env_list(
     "GDELT_KEYWORDS",
@@ -171,6 +175,10 @@ def summary() -> dict:
         "pyth_api_key_configured": bool(PYTH_API_KEY),
         "wits_countries": WITS_COUNTRIES,
         "wits_products": WITS_PRODUCTS,
+        "wto_api_key_configured": bool(WTO_API_KEY),
+        "wto_indicators": WTO_INDICATORS,
+        "wto_reporters": WTO_REPORTERS,
+        "wto_partners": WTO_PARTNERS,
         "gdelt_keywords": GDELT_KEYWORDS,
         "max_leverage": MAX_LEVERAGE,
         "max_margin_usage": MAX_MARGIN_USAGE,

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 from fastapi import APIRouter
 
-from backend.core.state_keys import WITS_AGGREGATE, WITS_LATEST_LEGACY
+from backend.core.state_keys import OFAC_SANCTIONS, WITS_AGGREGATE, WITS_LATEST_LEGACY
 from backend.core.state_store import StateStore
 from backend.compute.geopolitical_risk import compute_geopolitical_index, build_geopolitical_events
 from backend.compute.sanctions_risk import score_sanctions, sanctions_impact, sanctions_entities
@@ -29,6 +29,7 @@ def _state() -> dict[str, Any]:
         return {
             "gdelt": _store.get_snapshot("gdelt:latest"),
             "wits": raw_wits if is_observed_snapshot(raw_wits) else None,
+            "ofac": _store.get_snapshot(OFAC_SANCTIONS),
             "stablecoin": _store.get_snapshot("stablecoin:health:latest") or _store.get_snapshot("stablecoin:health"),
             "cross_asset": _store.get_snapshot("cross_asset:contagion:latest"),
         }
@@ -53,7 +54,7 @@ def geopolitical_events():
 @router.get("/sanctions")
 def sanctions():
     s = _state()
-    return score_sanctions(gdelt=s.get("gdelt"), wits=s.get("wits"))
+    return score_sanctions(gdelt=s.get("gdelt"), ofac=s.get("ofac"), wits=s.get("wits"))
 
 
 @router.get("/sanctions/impact")
@@ -63,7 +64,7 @@ def sanctions_market_impact():
 
 @router.get("/sanctions/entities")
 def sanctions_entity_feed():
-    return sanctions_entities(None)
+    return sanctions_entities(_state().get("ofac"))
 
 
 @router.get("/conflicts")

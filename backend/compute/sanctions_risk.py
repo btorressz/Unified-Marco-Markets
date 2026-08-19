@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from backend.compute.geopolitical_evidence import proxy_evidence
+from backend.ingest.quality import is_authoritative_observation
 
 SANCTIONS_PROGRAMS = {
     "Russia/Ukraine": {"score": 68, "countries": ["Russia", "Ukraine"], "assets": ["XLE", "XOM", "CVX", "DBA", "ITA", "GLD"], "sectors": ["Energy", "Fertilizer", "Wheat", "Defense"], "terms": ["russia", "ukraine", "sanction"]},
@@ -22,11 +23,12 @@ def _severity(score: float) -> str:
 
 
 def score_sanctions(gdelt: dict[str, Any] | None = None, ofac: dict[str, Any] | None = None, wits: dict[str, Any] | None = None) -> dict[str, Any]:
-    degraded = not gdelt and not ofac
+    authoritative = is_authoritative_observation(ofac, source_id="ofac_sanctions")
+    degraded = not gdelt and not authoritative
     tone = abs(float((gdelt or {}).get("avg_tone", (gdelt or {}).get("tone", -2.0)) or -2.0))
     shock = abs(float((gdelt or {}).get("shock_score", 0.6) or 0.6))
     tariff = float((wits or {}).get("tariff_pressure", (wits or {}).get("value", 35.0)) or 35.0)
-    ofac_delta = float((ofac or {}).get("new_entities", 0) or 0)
+    ofac_delta = float((ofac or {}).get("added_count", 0) or 0) if authoritative and (ofac or {}).get("changes_available") else 0.0
     base = min(100.0, 35 + tone * 4 + shock * 8 + tariff * 0.15 + min(ofac_delta, 20) * 1.5)
     programs = []
     for name, meta in SANCTIONS_PROGRAMS.items():
@@ -35,7 +37,10 @@ def score_sanctions(gdelt: dict[str, Any] | None = None, ofac: dict[str, Any] | 
             gdelt=gdelt,
             terms=meta["terms"],
             static_mapping=f"sanctions_program:{name}",
-            authoritative_evidence=bool(ofac),
+            # An OFAC snapshot cannot substantiate these broader static program
+            # mappings; authority remains attached only to normalized records
+            # and deterministic dataset deltas.
+            authoritative_evidence=False,
         )
         programs.append({
             "program": name,
@@ -48,42 +53,41 @@ def score_sanctions(gdelt: dict[str, Any] | None = None, ofac: dict[str, Any] | 
             "data_quality": "degraded" if degraded else "ok",
             **evidence,
         })
-    authoritative_observed = bool(ofac) and ofac_delta > 0
+    authoritative_observed = authoritative and ofac_delta > 0
     return {
         "sanctions_score": round(base, 2),
         "severity": _severity(base),
         "programs": programs,
         "new_sanctions": authoritative_observed,
         "entity_additions": int(ofac_delta),
-        "entity_removals": int((ofac or {}).get("removed_entities", 0) or 0),
-        "provider_status": {"gdelt": "ok" if gdelt else "degraded", "ofac_public_download": "ok" if ofac else "not_configured"},
+        "entity_updates": int((ofac or {}).get("updated_count", 0) or 0) if authoritative else 0,
+        "entity_removals": int((ofac or {}).get("removed_count", 0) or 0) if authoritative else 0,
+        "provider_status": {"gdelt": "ok" if gdelt else "degraded", "ofac_public_download": (ofac or {}).get("provider_status", "not_configured") if authoritative else "not_configured"},
         "data_quality": "degraded" if degraded else "ok",
         "degraded": degraded,
         "claim_type": "observed_evidence" if authoritative_observed else "proxy",
         "observed": authoritative_observed,
-        "authoritative_evidence": bool(ofac),
-        "evidence_basis": "ofac_plus_context" if ofac else "gdelt_aggregate_and_static_program_mappings",
-        "limitations": [] if ofac else ["No authoritative sanctions feed is attached; program-level outputs are research proxies."],
+        "authoritative_evidence": authoritative,
+        "evidence_basis": "ofac_plus_context" if authoritative else "gdelt_aggregate_and_static_program_mappings",
+        "limitations": [] if authoritative else ["No authoritative sanctions feed is attached; program-level outputs are research proxies."],
         "timestamp": _now(),
     }
 
 
 def sanctions_entities(ofac: dict[str, Any] | None = None) -> dict[str, Any]:
-    degraded = not ofac
-    entities = (ofac or {}).get("entities") or [
-        {"name": "Demo Energy Shipping Entity", "program": "Iran/Middle East", "country": "Global", "change": "watch"},
-        {"name": "Demo Semiconductor Export Control Entity", "program": "China export controls", "country": "China", "change": "watch"},
-        {"name": "Demo Financial Restrictions Entity", "program": "Financial sanctions", "country": "Global", "change": "watch"},
-    ]
+    authoritative = is_authoritative_observation(ofac, source_id="ofac_sanctions")
+    degraded = not authoritative
+    entities = (ofac or {}).get("recent_changes", []) if authoritative else []
     return {
         "entities": entities,
         "count": len(entities),
         "degraded": degraded,
         "data_quality": "degraded" if degraded else "ok",
-        "claim_type": "static_mapping" if degraded else "observed_evidence",
-        "observed": not degraded,
-        "authoritative_evidence": not degraded,
-        "limitations": ["Demo entities are static research examples, not observed sanctioned entities."] if degraded else [],
+        "claim_type": "proxy" if degraded else "observed_evidence",
+        "observed": authoritative,
+        "authoritative_evidence": authoritative,
+        "provider_status": (ofac or {}).get("provider_status", "not_configured") if authoritative else "not_configured",
+        "limitations": ["Authoritative current OFAC entity changes are unavailable; no demo entities are substituted."] if degraded else [],
         "timestamp": _now(),
     }
 
