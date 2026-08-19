@@ -8,10 +8,11 @@ from pathlib import Path
 import pytest
 
 import backend.compute.counterfactual_sensitivity as sensitivity_module
-from backend.compute.counterfactual_replay import counterfactual_decision
+from backend.compute.counterfactual_replay import counterfactual_decision, recorded_counterfactual_baseline
 from backend.compute.counterfactual_sensitivity import (
     MAX_SENSITIVITY_CELLS,
     SensitivityUnavailable,
+    counterfactual_field_metadata,
     counterfactual_sensitivity,
 )
 from backend.compute.decision_replay import decision_hash
@@ -113,7 +114,7 @@ def test_liquidity_sweep_truthfully_detects_non_monotonic_current_rule():
         _record(),
         x={"field": "liquidity_depth", "values": [0, 25, 50, 75]},
     )
-    assert [point["decision"] for point in result["points"]] == ["allow", "block", "allow", "allow"]
+    assert [point["decision"] for point in result["points"]] == ["allow", "block", "allow", "allow", "allow"]
     boundary = result["boundary_analysis"]
     assert boundary["monotonicity"] == "non_monotonic"
     assert boundary["transition_count"] == 2
@@ -128,14 +129,16 @@ def test_two_dimensional_spread_liquidity_matrix_contains_real_replay_cells():
         y={"field": "liquidity_depth", "values": [25, 100]},
     )
     assert result["dimensions"] == 2
-    assert result["cell_count"] == 4
+    assert result["cell_count"] == 6
     assert [[cell["decision"] for cell in row] for row in result["matrix"]] == [
-        ["block", "block"],
-        ["allow", "block"],
+        ["block", "block", "block"],
+        ["allow", "allow", "block"],
     ]
-    assert result["matrix"][0][0]["stage"] == "execution_agent"
-    assert result["matrix"][1][0]["stage"] == "pre_trade_complete"
+    assert result["matrix"][0][1]["stage"] == "execution_agent"
+    assert result["matrix"][1][1]["stage"] == "pre_trade_complete"
     assert result["row_boundary_analysis"][1]["transitions"][0]["boundary_bracket"] == [40.0, 60.0]
+    assert result["matrix"][1][0]["is_baseline"] is True
+    assert "robustness" not in result
 
 
 def test_sensitivity_reuses_exact_baseline_once(monkeypatch):
@@ -225,7 +228,7 @@ def test_realized_outcome_overlay_uses_same_historical_move_for_all_cells():
     )
     assert result["realized_outcome_overlay"]["realized_signed_return"] == -0.052
     assert result["points"][0]["realized_outcome"]["interpretation"] == "requested_side_adverse"
-    assert result["points"][1]["realized_outcome"]["interpretation"] == "avoided_adverse_move"
+    assert result["points"][-1]["realized_outcome"]["interpretation"] == "avoided_adverse_move"
     assert result["persisted"] is False
     assert result["orders_submitted"] == 0
     assert result["research_only"] is True
@@ -274,3 +277,123 @@ def test_api_frontend_and_main_are_wired_research_only():
     assert "SENSITIVITY RESEARCH ONLY" in client
     assert "Maximum 100 cells" in client
     assert "counterfactual_sensitivity.js" in main
+
+
+def test_field_metadata_is_truthful_and_exposes_hard_ranges():
+    spread = counterfactual_field_metadata("spread_bps")
+    stable = counterfactual_field_metadata("stable_health")
+    uncertain = counterfactual_field_metadata("basis_spread")
+    assert spread["unit"] == "bps"
+    assert spread["semantic_minimum"] == 0.0
+    assert stable["unit"] == "normalized 0–1"
+    assert stable["semantic_minimum"] == 0.0
+    assert stable["semantic_maximum"] == 1.0
+    assert uncertain["unit"] == "unspecified"
+
+
+def test_baseline_is_extracted_from_immutable_replay_mapping_and_inserted_once():
+    row = _record(spread_bps=35.0)
+    original = copy.deepcopy(row)
+    baseline = recorded_counterfactual_baseline(row, "spread_bps")
+    assert baseline["status"] == "available"
+    assert baseline["value"] == 35.0
+    result = counterfactual_sensitivity(
+        row, x={"field": "spread_bps", "values": [10, 20, 30, 40, 50, 60]},
+    )
+    assert result["x"]["requested_values"] == [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]
+    assert result["x"]["resolved_values"] == [10.0, 20.0, 30.0, 35.0, 40.0, 50.0, 60.0]
+    assert result["x"]["baseline_inserted"] is True
+    assert sum(point["is_baseline"] for point in result["points"]) == 1
+    assert row == original
+
+    existing = counterfactual_sensitivity(
+        row, x={"field": "spread_bps", "values": [10, 35, 60]},
+    )
+    assert existing["x"]["baseline_inserted"] is False
+    assert existing["x"]["resolved_values"].count(35.0) == 1
+
+
+def test_inconsistent_recorded_values_disable_scalar_robustness_and_presets():
+    row = _record(spread_bps=35.0)
+    row["input_state"]["replay_inputs"]["execution_boundary"]["agent"]["market_state"]["spread_bps"] = 35.0
+    # fill_price is intentionally represented in multiple active replay locations.
+    row["input_state"]["replay_inputs"]["execution_boundary"]["data"]["order"]["price"] = 151.0
+    boundary = row["input_state"]["replay_inputs"]["execution_boundary"]
+    row["final_decision"] = combine_execution_decision(
+        data_result=evaluate_data_guardrails(boundary["data"]),
+        risk_result={"status": "not_used"},
+        agent_result=evaluate_execution_agent(boundary["agent"], as_of=row["decision_ts"]),
+        execution_mode="paper", executor_available=True, as_of=row["decision_ts"],
+    )
+    row["decision_hash"] = decision_hash(row)
+    baseline = recorded_counterfactual_baseline(row, "fill_price")
+    assert baseline["status"] == "inconsistent"
+    manual = counterfactual_sensitivity(row, x={"field": "fill_price", "values": [140, 160]})
+    assert manual["robustness"]["local_robustness"]["classification"] == "UNAVAILABLE"
+    with pytest.raises(SensitivityUnavailable, match="requires an available consistent recorded baseline"):
+        counterfactual_sensitivity(row, x={"field": "fill_price", "preset": "local"})
+
+
+def test_presets_are_deterministic_bounded_and_clipped_without_search():
+    row = _record(spread_bps=0.0)
+    first = counterfactual_sensitivity(row, x={"field": "spread_bps", "preset": "wide"})
+    second = counterfactual_sensitivity(row, x={"field": "spread_bps", "preset": "wide"})
+    assert first["x"]["resolved_values"] == second["x"]["resolved_values"]
+    assert 0.0 in first["x"]["resolved_values"]
+    assert min(first["x"]["resolved_values"]) >= 0.0
+    assert len(first["x"]["resolved_values"]) <= 5
+    assert first["x"]["preset_version"] == "baseline_neighborhood_v1"
+
+
+def test_baseline_insertion_cannot_bypass_axis_or_cell_bounds():
+    with pytest.raises(SensitivityUnavailable, match="after baseline insertion"):
+        counterfactual_sensitivity(
+            _record(spread_bps=1000),
+            x={"field": "spread_bps", "values": list(range(50))},
+        )
+    with pytest.raises(SensitivityUnavailable, match="maximum 100 cells after baseline insertion"):
+        counterfactual_sensitivity(
+            _record(spread_bps=35, liquidity_depth=52),
+            x={"field": "spread_bps", "values": list(range(10))},
+            y={"field": "liquidity_depth", "values": list(range(10, 110, 10))},
+        )
+
+
+def test_nearest_sampled_boundary_distance_and_versioned_local_robustness():
+    result = counterfactual_sensitivity(
+        _record(spread_bps=35),
+        x={"field": "spread_bps", "values": [10, 20, 30, 40, 50, 60, 90, 100]},
+    )
+    robust = result["robustness"]
+    assert robust["nearest_sampled_boundary"]["boundary_bracket"] == [50.0, 60.0]
+    assert robust["distance"]["distance_min"] == 15.0
+    assert robust["distance"]["distance_max"] == 25.0
+    assert robust["local_robustness"]["classification"] == "HIGH"
+    assert robust["local_robustness"]["version"] == "sampled_local_v1"
+    assert robust["local_robustness"]["reference_scale"] == 35.0
+    assert robust["local_robustness"]["normalized_distance"] == pytest.approx(15 / 35)
+
+
+def test_close_liquidity_boundary_is_low_and_non_monotonic_transitions_remain():
+    result = counterfactual_sensitivity(
+        _record(liquidity_depth=52),
+        x={"field": "liquidity_depth", "values": [0, 25, 49, 50, 75]},
+    )
+    assert result["boundary_analysis"]["monotonicity"] == "non_monotonic"
+    assert len(result["boundary_analysis"]["transitions"]) == 2
+    nearest = result["robustness"]["nearest_sampled_boundary"]
+    assert nearest["boundary_bracket"] == [49.0, 50.0]
+    assert result["robustness"]["distance"]["min"] == 2.0
+    assert result["robustness"]["distance"]["max"] == 3.0
+    assert result["robustness"]["local_robustness"]["classification"] == "LOW"
+
+
+def test_no_transition_is_not_misclassified_as_high():
+    result = counterfactual_sensitivity(
+        _record(spread_bps=35), x={"field": "spread_bps", "values": [10, 20, 30, 40]},
+    )
+    robust = result["robustness"]
+    assert robust["nearest_sampled_boundary"]["available"] is False
+    assert robust["nearest_sampled_boundary"]["reason"] == "no_transition_in_sampled_range"
+    assert robust["distance"]["available"] is False
+    assert robust["local_robustness"]["classification"] == "NO_BOUNDARY_OBSERVED"
