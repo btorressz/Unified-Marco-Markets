@@ -5,6 +5,7 @@ from backend.compute.geopolitical_market_impact import estimate_market_impact
 from backend.compute.geopolitical_risk import compute_geopolitical_index, build_geopolitical_events
 from backend.compute.sanctions_risk import score_sanctions
 from backend.compute.shipping_energy_risk import score_chokepoints
+from pathlib import Path
 
 
 def _gdelt():
@@ -118,3 +119,31 @@ def test_composite_index_and_normalized_events_preserve_proxy_boundary():
     assert events["events"]
     assert all(event.get("observed") is False for event in events["events"])
     assert all(event.get("claim_type") in {"proxy", "evidence_supported_proxy"} for event in events["events"])
+
+
+def test_authoritative_ofac_change_becomes_event_without_upgrading_proxies():
+    ofac = authoritative_evidence_envelope(
+        source="OFAC", source_id="ofac_sanctions", authority="OFAC", jurisdiction="US",
+        dataset="SDN", observation={"source_record_id": "snapshot"}, source_record_id="snapshot",
+        retrieved_at="2026-08-19T00:00:00+00:00",
+    )
+    ofac.update({"changes_available": True, "added_count": 1, "recent_changes": [{
+        "source_record_id": "123", "entity_name": "Example", "programs": ["TEST"],
+        "change_type": "ADDED", "change_detected_at": "2026-08-19T01:00:00+00:00",
+    }]})
+    events = build_geopolitical_events(compute_geopolitical_index({"ofac": ofac}))["events"]
+    observed = next(event for event in events if event["event_type"] == "OFAC_SANCTION_ADDED")
+    assert observed["claim_type"] == "observed_evidence" and observed["authoritative_evidence"] is True
+    assert observed["event_time_basis"] == "provider_change_detected_at_retrieval"
+    assert all(event["authoritative_evidence"] is not True for event in events if event is not observed)
+
+
+def test_reaction_lab_frontend_exposes_matrix_and_causality_states():
+    root = Path(__file__).parents[1] / "frontend"
+    source = "\n".join((root / path).read_text() for path in ("index.html", "assets/api.js", "assets/app.js", "assets/ui.js", "assets/styles.css"))
+    for token in (
+        "Geopolitical Event → Market Reaction Lab", "Expected", "1h", "4h", "24h", "7d",
+        "MATCH", "CONTRADICT", "MIXED", "NOT MATURED", "UNAVAILABLE", "UNSCORABLE",
+        "EVENT STUDY — NOT CAUSAL ATTRIBUTION",
+    ):
+        assert token in source

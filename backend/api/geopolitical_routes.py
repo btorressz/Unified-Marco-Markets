@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
-from fastapi import APIRouter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from fastapi import APIRouter, HTTPException
 
 from backend.core.state_keys import OFAC_SANCTIONS, WITS_AGGREGATE, WITS_LATEST_LEGACY
 from backend.core.state_store import StateStore
@@ -11,8 +13,10 @@ from backend.compute.sanctions_risk import score_sanctions, sanctions_impact, sa
 from backend.compute.conflict_escalation import score_conflicts, conflict_market_impact
 from backend.compute.shipping_energy_risk import score_chokepoints, score_energy_shock, supply_chain_impact
 from backend.compute.geopolitical_market_impact import estimate_market_impact
+from backend.compute.geopolitical_event_study import ASSET_BUCKETS, MAX_EVENTS, MAX_SYMBOLS, compute_event_study, normalize_study_event
 from backend.compute.portfolio_protection import scenario_protection
 from backend.ingest.quality import is_observed_snapshot
+from backend.ingest.yfinance_ingest import fetch_market_history
 from backend.agents.geopolitical_agent import GeopoliticalAgent
 from backend.agents.sanctions_agent import SanctionsAgent
 from backend.agents.conflict_agent import ConflictAgent
@@ -49,6 +53,41 @@ def geopolitical_index():
 @router.get("/events")
 def geopolitical_events():
     return build_geopolitical_events(_idx())
+
+
+def _reaction_events() -> list[dict[str, Any]]:
+    return [normalize_study_event(event) for event in geopolitical_events().get("events", [])[:MAX_EVENTS]]
+
+
+@router.get("/reaction-lab/events")
+def reaction_lab_events():
+    events = _reaction_events()
+    return {"events": events, "count": len(events), "max_events": MAX_EVENTS, "read_only": True}
+
+
+@router.get("/reaction-lab/events/{event_id}")
+def reaction_lab_study(event_id: str):
+    event = next((row for row in _reaction_events() if row["event_id"] == event_id), None)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Reaction Lab event not found")
+    if not event["study_eligible"]:
+        raise HTTPException(status_code=422, detail={"message": "Event is not study eligible", "limitations": event["study_limitations"]})
+    symbols = list(dict.fromkeys(symbol for meta in ASSET_BUCKETS.values() for symbol in meta["symbols"]))[:MAX_SYMBOLS]
+    histories: dict[str, list[dict[str, Any]]] = {}
+    provider_status = {}
+    # One strict request per unique symbol; all horizons are derived locally.
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(fetch_market_history, symbol, period="1mo", interval="5m"): symbol for symbol in symbols}
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                result = future.result(timeout=30)
+            except Exception as exc:
+                result = {"history": [], "found": False, "synthetic": False, "error": str(exc)}
+            # Strict-path defense in depth: synthetic/degraded observations are never analyzed.
+            histories[symbol] = list(result.get("history") or [])[:9000] if result.get("found") and result.get("synthetic") is False else []
+            provider_status[symbol] = {"found": bool(histories[symbol]), "synthetic": result.get("synthetic", False), "error": result.get("error")}
+    return {**compute_event_study(event, histories), "provider_status": provider_status, "unique_symbol_count": len(symbols)}
 
 
 @router.get("/sanctions")

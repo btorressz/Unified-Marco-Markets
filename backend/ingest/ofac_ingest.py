@@ -111,11 +111,12 @@ class OFACIngestor:
                 change = "ADDED" if uid not in previous else "UPDATED" if previous[uid][0] != digest else "UNCHANGED"
                 record["evidence"]["change_type"] = change
                 counts[f"{change.lower()}_count"] += 1
-                if change != "UNCHANGED": changes.append({**record["observation"], "change_type": change})
+                if change != "UNCHANGED":
+                    changes.append({**record["observation"], "change_type": change, "change_detected_at": retrieved_at})
             for uid, (_, record) in previous.items():
                 if uid not in current:
                     counts["removed_count"] += 1
-                    changes.append({**record["observation"], "change_type": "REMOVED"})
+                    changes.append({**record["observation"], "change_type": "REMOVED", "change_detected_at": retrieved_at})
         self._baseline = current
         content_hash = dataset_hash(records)
         provenance_ids = []

@@ -61,6 +61,7 @@ def test_ofac_normalization_identity_hash_and_deltas_are_deterministic():
     added_records[1]["observation"]["provider_ids"]["uid"] = "456"
     added = ingestor.process_records(added_records, retrieved_at="later")
     assert added["added_count"] == 1
+    assert added["recent_changes"][0]["change_detected_at"] == "later"
 
     added_records[0]["observation"]["remarks"] = "changed"
     updated = ingestor.process_records(added_records, retrieved_at="later")

@@ -1476,6 +1476,7 @@ const UI = (() => {
   function renderGeopoliticsTab(data) {
     data = data || {};
     const idx = data.index || {};
+    renderGeopoliticalReactionLab(data.reactionEvents, data.reactionStudy);
     const components = [
       ['Sanctions', idx.sanctions_score], ['Conflict', idx.conflict_score], ['Shipping', idx.shipping_score], ['Energy', idx.energy_score], ['Cyber/Policy', idx.cyber_policy_score], ['Tariff', idx.tariff_score], ['Market Stress', idx.market_stress_score],
     ];
@@ -1538,6 +1539,37 @@ const UI = (() => {
       const r = data.dailyBrief || {};
       report.innerHTML = `<div class="card-header"><span class="card-title">Daily Geopolitical Risk Brief</span></div><b>${r.headline || '--'}</b><div style="font-size:12px;color:var(--text-muted)">Regime: ${r.risk_regime || '--'} · Quality: ${r.data_quality || 'degraded'}</div>${(r.limitations || []).map(x => `<div style="font-size:11px;color:var(--text-muted)">• ${x}</div>`).join('')}`;
     }
+  }
+
+  function reactionAuthorityBadges(event) {
+    const evidence = event.authoritative_evidence ? 'OBSERVED EVIDENCE' : event.claim_type === 'evidence_supported_proxy' ? 'EVIDENCE-SUPPORTED PROXY' : 'PROXY';
+    return `<span class="quality-badge ${event.authoritative_evidence ? 'observed' : 'proxy'}">${evidence}</span><span class="quality-badge ${event.authoritative_evidence ? 'observed' : 'proxy'}">${event.authoritative_evidence ? 'AUTHORITATIVE' : 'NON-AUTHORITATIVE'}</span><span class="quality-badge proxy">RESEARCH ONLY</span>`;
+  }
+
+  function renderGeopoliticalReactionLab(catalog, study) {
+    const panel = document.getElementById('geo-reaction-lab-panel'); if (!panel) return;
+    const events = (catalog || {}).events || [];
+    const selected = (study || {}).event || events.find(event => event.study_eligible) || events[0];
+    const options = events.map(event => `<option value="${escapeHtml(event.event_id)}" ${selected && event.event_id === selected.event_id ? 'selected' : ''}>${escapeHtml(event.source || '--')} — ${escapeHtml(event.title || event.event_type)} — ${formatTimestamp(event.event_timestamp)}</option>`).join('');
+    const expectedVisual = {UP: '↑ UP', DOWN: '↓ DOWN', MIXED: '↔ MIXED', UNKNOWN: '? UNKNOWN'};
+    const statusLabels = {MATCH:'MATCH', CONTRADICT:'CONTRADICT', MIXED:'MIXED', NOT_MATURED:'NOT MATURED', UNAVAILABLE:'UNAVAILABLE', UNSCORABLE:'UNSCORABLE'};
+    const matrix = ((study || {}).buckets || []).map(bucket => {
+      const cells = ['1h','4h','24h','7d'].map(horizon => {
+        const row = (bucket.observations || {})[horizon] || {classification:'UNAVAILABLE'};
+        const value = row.return == null ? '' : `<strong>${row.return >= 0 ? '+' : ''}${(Number(row.return) * 100).toFixed(2)}%</strong><br>`;
+        return `<td class="reaction-${String(row.classification).toLowerCase().replace('_','-')}">${value}<span>${statusLabels[row.classification] || 'UNAVAILABLE'}</span>${row.total_constituent_count > 1 ? `<small>${row.available_constituent_count}/${row.total_constituent_count} observed</small>` : ''}</td>`;
+      }).join('');
+      return `<tr><td><strong>${escapeHtml(bucket.label || bucket.bucket)}</strong><small>${escapeHtml((bucket.symbols || []).join(', '))}</small></td><td aria-label="Expected ${escapeHtml(bucket.expected_direction)}">${expectedVisual[bucket.expected_direction] || '? UNKNOWN'}</td>${cells}</tr>`;
+    }).join('');
+    const metadata = selected ? `<div class="reaction-metadata"><span><b>Source:</b> ${escapeHtml(selected.source || '--')}</span><span><b>Authority:</b> ${selected.authoritative_evidence ? 'Authoritative' : 'Non-authoritative'}</span><span><b>Claim type:</b> ${escapeHtml(selected.claim_type || '--')}</span><span><b>Event timestamp:</b> ${formatTimestamp(selected.event_timestamp)}</span><span><b>Time basis:</b> ${escapeHtml(selected.event_time_basis || '--')}</span><span><b>Record/change ID:</b> ${escapeHtml(selected.source_record_id || selected.change_type || '--')}</span>${(selected.programs || []).length ? `<span><b>Programs:</b> ${escapeHtml(selected.programs.join(', '))}</span>` : ''}</div><div class="quality-strip">${reactionAuthorityBadges(selected)}</div>` : '';
+    panel.innerHTML = `<div class="card-header"><span class="card-title">Geopolitical Event → Market Reaction Lab</span></div><div class="reaction-warning"><strong>EVENT STUDY — NOT CAUSAL ATTRIBUTION</strong><br>Observed returns measure market movement after the recorded event time. They do not establish that the event caused the movement. Expected directions are deterministic research mappings, not predictions or trading signals.</div><label class="metric-label" for="geo-reaction-event-selector">Research event</label><select id="geo-reaction-event-selector" class="reaction-selector">${options}</select>${metadata}${study ? `<div class="table-scroll"><table class="reaction-matrix"><thead><tr><th>Asset bucket</th><th>Expected</th><th>1h</th><th>4h</th><th>24h</th><th>7d</th></tr></thead><tbody>${matrix}</tbody></table></div>` : '<div class="empty-state-text">Observed history is UNAVAILABLE for this event, or no eligible event is available.</div>'}`;
+    const selector = document.getElementById('geo-reaction-event-selector');
+    if (selector) selector.addEventListener('change', async () => {
+      panel.classList.add('loading');
+      try { renderGeopoliticalReactionLab(catalog, await API.getGeopoliticalReactionStudy(selector.value)); }
+      catch (_) { renderGeopoliticalReactionLab(catalog, null); }
+      finally { panel.classList.remove('loading'); }
+    });
   }
 
   function renderGeoScenarioResult(data) {
@@ -1736,7 +1768,7 @@ const UI = (() => {
     renderRiskIntelligence,
     renderAgentConsensusAndAttribution,
 
-    renderGeopoliticsTab,
+    renderGeopoliticsTab, renderGeopoliticalReactionLab,
     renderGeoScenarioResult,
     renderEquitiesTab,
     renderStrategyPerformance,

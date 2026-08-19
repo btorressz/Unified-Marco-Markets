@@ -654,9 +654,10 @@ const App = (() => {
 
 
   async function refreshGeopolitics() {
-    const [index, events, sanctions, conflicts, chokepoints, energy, impact, protection, agentSignals, dailyBrief, protectionBrief] = await Promise.allSettled([
+    const [index, events, reactionEvents, sanctions, conflicts, chokepoints, energy, impact, protection, agentSignals, dailyBrief, protectionBrief] = await Promise.allSettled([
       API.getGeopoliticalIndex(),
       API.getGeopoliticalEvents(),
+      API.getGeopoliticalReactionEvents(),
       API.getGeopoliticalSanctions(),
       API.getGeopoliticalConflicts(),
       API.getGeopoliticalChokepoints(),
@@ -667,9 +668,17 @@ const App = (() => {
       API.getGeopoliticalDailyBrief(),
       API.getGeopoliticalProtectionBrief(),
     ]);
+    let reactionStudy = null;
+    const catalog = reactionEvents.status === 'fulfilled' ? reactionEvents.value : null;
+    const firstEligible = ((catalog || {}).events || []).find(event => event.study_eligible);
+    if (firstEligible) {
+      try { reactionStudy = await API.getGeopoliticalReactionStudy(firstEligible.event_id); } catch (_) { /* strict history may be unavailable */ }
+    }
     UI.renderGeopoliticsTab({
       index: index.status === 'fulfilled' ? index.value : null,
       events: events.status === 'fulfilled' ? events.value : null,
+      reactionEvents: catalog,
+      reactionStudy,
       sanctions: sanctions.status === 'fulfilled' ? sanctions.value : null,
       conflicts: conflicts.status === 'fulfilled' ? conflicts.value : null,
       chokepoints: chokepoints.status === 'fulfilled' ? chokepoints.value : null,

@@ -55,6 +55,8 @@ GEOPOLITICAL_MARKET_SYMBOLS = {
     "BTC": "BTC-USD",
     "ETH": "ETH-USD",
     "SOL": "SOL-USD",
+    # UUP is an exchange-traded broad US-dollar index proxy, not spot FX.
+    "UUP": "UUP",
 }
 
 GEOPOLITICAL_NEWS_QUERIES = [
@@ -77,7 +79,7 @@ SECTORS = {
     "AMZN": "Retail/Cloud", "NKE": "Apparel", "LULU": "Apparel", "WMT": "Retail", "TGT": "Retail",
     "COST": "Retail", "HD": "Retail", "CAT": "Machinery", "DE": "Machinery", "BA": "Aerospace",
     "F": "Autos", "GM": "Autos", "XOM": "Energy", "CVX": "Energy", "FCX": "Materials",
-    "NUE": "Steel", "STLD": "Steel",
+    "NUE": "Steel", "STLD": "Steel", "UUP": "FX / broad USD ETF proxy",
 }
 
 _BASE_PRICES = {ticker: 80.0 + i * 7.5 for i, ticker in enumerate(EQUITY_UNIVERSE)} | {

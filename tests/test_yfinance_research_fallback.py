@@ -98,6 +98,8 @@ def test_crypto_symbol_contracts_cover_btc_eth_sol():
     assert YFINANCE_SOL_USD == "price:yfinance:SOL_USD"
     assert YFINANCE_BTC_USD == "price:yfinance:BTC_USD"
     assert YFINANCE_ETH_USD == "price:yfinance:ETH_USD"
+    assert yi.GEOPOLITICAL_MARKET_SYMBOLS["UUP"] == "UUP"
+    assert yi.SECTORS["UUP"] == "FX / broad USD ETF proxy"
 
 
 def test_execution_price_authority_excludes_yahoo_by_default():
