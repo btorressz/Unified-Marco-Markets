@@ -55,7 +55,7 @@ def normalized_conflict_events(conflicts: dict[str, Any]) -> list[dict[str, Any]
             "title": f"{h['region']} escalation watch", "region": h["region"], "countries": h["countries"],
             "severity": h["severity"], "confidence": 0.62 if conflicts.get("degraded") else 0.78,
             "source": "GDELT contextual evidence" if h.get("evidence_count") else "GDELT aggregate proxy",
-            "event_timestamp": conflicts.get("timestamp"), "data_timestamp": conflicts.get("timestamp"),
+            "event_timestamp": conflicts.get("timestamp"), "event_time_basis": "research_proxy_computed_at", "data_timestamp": conflicts.get("timestamp"),
             "affected_sectors": h["sectors"], "affected_assets": h["assets"], "reasoning": h["reasoning"],
             "data_quality": h["data_quality"],
             **{k: h.get(k) for k in ("claim_type", "observed", "proxy", "scenario", "authoritative_evidence", "evidence_basis", "evidence_count", "evidence_ids", "evidence_quality", "limitations")},

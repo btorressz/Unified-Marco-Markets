@@ -62,6 +62,7 @@ def score_sanctions(gdelt: dict[str, Any] | None = None, ofac: dict[str, Any] | 
         "entity_additions": int(ofac_delta),
         "entity_updates": int((ofac or {}).get("updated_count", 0) or 0) if authoritative else 0,
         "entity_removals": int((ofac or {}).get("removed_count", 0) or 0) if authoritative else 0,
+        "authoritative_changes": list((ofac or {}).get("recent_changes", []))[:100] if authoritative else [],
         "provider_status": {"gdelt": "ok" if gdelt else "degraded", "ofac_public_download": (ofac or {}).get("provider_status", "not_configured") if authoritative else "not_configured"},
         "data_quality": "degraded" if degraded else "ok",
         "degraded": degraded,

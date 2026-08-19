@@ -80,7 +80,7 @@ def compute_event_reaction(event: dict[str, Any], market_snapshot: dict[str, Any
         assets[ticker] = {"estimated_return": round(equity_reaction * beta, 6), "reaction": "weakness" if equity_reaction < 0 else "strength"}
     for ticker, beta in {"BTC": 1.0, "ETH": 1.10, "SOL": 1.35}.items():
         assets[ticker] = {"estimated_return": round(crypto_reaction * beta, 6), "reaction": "risk_off"}
-    return {"event_id": event.get("id"), "assets": assets, "stablecoin_health_impact": round(stable_stress, 4), "funding_bps_impact": round(funding_shift, 2), "basis_bps_impact": round(basis_shift, 2), "degraded": bool(event.get("degraded")) or not bool(market_snapshot), "ts": _now().isoformat()}
+    return {"event_id": event.get("id"), "assets": assets, "stablecoin_health_impact": round(stable_stress, 4), "funding_bps_impact": round(funding_shift, 2), "basis_bps_impact": round(basis_shift, 2), "degraded": bool(event.get("degraded")) or not bool(market_snapshot), "claim_type": "expected_market_impact", "observed_market_reaction": False, "causal_claim": False, "methodology": "Deterministic research estimates; values are not observed market returns.", "ts": _now().isoformat()}
 
 
 def compute_impact(events: list[dict[str, Any]], market_snapshot: dict[str, Any] | None = None) -> dict[str, Any]:

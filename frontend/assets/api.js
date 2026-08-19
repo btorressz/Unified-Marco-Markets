@@ -204,6 +204,8 @@ const API = (() => {
     getAgentSignalsReport: () => fetchJSON('/api/reports/agent-signals'),
     getGeopoliticalIndex: () => fetchJSON('/api/geopolitical/index'),
     getGeopoliticalEvents: () => fetchJSON('/api/geopolitical/events'),
+    getGeopoliticalReactionEvents: () => fetchJSON('/api/geopolitical/reaction-lab/events'),
+    getGeopoliticalReactionStudy: (id) => fetchJSON(`/api/geopolitical/reaction-lab/events/${encodeURIComponent(id)}`),
     getGeopoliticalSanctions: () => fetchJSON('/api/geopolitical/sanctions'),
     getGeopoliticalSanctionsImpact: () => fetchJSON('/api/geopolitical/sanctions/impact'),
     getGeopoliticalSanctionsEntities: () => fetchJSON('/api/geopolitical/sanctions/entities'),

@@ -32,6 +32,9 @@ def score_chokepoints(gdelt: dict[str, Any] | None = None) -> dict[str, Any]:
     for i, (name, region, sectors, assets, terms) in enumerate(CHOKEPOINTS):
         score = min(100.0, base + (i % 3) * 7)
         evidence = proxy_evidence(gdelt=gdelt, terms=terms, static_mapping=f"chokepoint:{name}")
+        evidence["limitations"] = list(evidence.get("limitations", [])) + [
+            "Contextual evidence does not establish an observed chokepoint closure or disruption."
+        ]
         rows.append({
             "name": name, "region": region, "risk_score": round(score, 2), "severity": _severity(score),
             "affected_sectors": sectors, "affected_assets": assets,
