@@ -33,7 +33,16 @@
   }
 
   function fieldOptions(includeNone = false) {
-    return `${includeNone ? '<option value="">NONE (1-D)</option>' : ''}${NUMERIC_FIELDS.map(field => `<option value="${field}">${field}</option>`).join('')}`;
+    return `${includeNone ? '<option value="">NONE (1-D)</option>' : ''}${NUMERIC_FIELDS.map(field => `<option value="${field}">${field.replace(/_/g, ' ')}</option>`).join('')}`;
+  }
+
+  function axisMeta(payload, axisName) {
+    const axis = payload[axisName] || {};
+    return axis.metadata || { label: axis.field || '--', unit: 'unspecified' };
+  }
+
+  function valueWithUnit(value, unit) {
+    return `${escapeHtml(value)}${unit && unit !== 'unspecified' ? ` ${escapeHtml(unit)}` : ''}`;
   }
 
   function parseValues(raw, label) {
@@ -56,10 +65,10 @@
     return String(decision || '').toLowerCase() === 'allow' ? 'match' : 'mismatch';
   }
 
-  function renderBoundary(boundary) {
+  function renderBoundary(boundary, unit) {
     if (!boundary) return '';
     const transitions = (boundary.transitions || []).map(item =>
-      `<tr><td>${escapeHtml(item.lower_value)}</td><td>${escapeHtml(item.upper_value)}</td><td>${escapeHtml(String(item.from_decision || '').toUpperCase())} → ${escapeHtml(String(item.to_decision || '').toUpperCase())}</td></tr>`
+      `<tr><td>${valueWithUnit(item.lower_value, unit)}</td><td>${valueWithUnit(item.upper_value, unit)}</td><td>${escapeHtml(String(item.from_decision || '').toUpperCase())} → ${escapeHtml(String(item.to_decision || '').toUpperCase())}</td></tr>`
     ).join('');
     return `
       <h4 style="margin:12px 0 6px">Decision Boundary Analysis</h4>
@@ -67,12 +76,36 @@
       ${transitions ? `<div class="table-scroll"><table><thead><tr><th>Lower</th><th>Upper</th><th>Transition</th></tr></thead><tbody>${transitions}</tbody></table></div>` : '<div class="empty-state-text">No ALLOW/BLOCK transition was observed in the supplied values.</div>'}`;
   }
 
+  function renderRobustness(payload) {
+    const robustness = payload.robustness || {};
+    const baseline = robustness.baseline || {};
+    const boundary = robustness.nearest_sampled_boundary || {};
+    const distance = robustness.distance || {};
+    const local = robustness.local_robustness || {};
+    const meta = axisMeta(payload, 'x');
+    const boundaryText = boundary.available
+      ? `${valueWithUnit(boundary.boundary_bracket[0], robustness.unit)}–${valueWithUnit(boundary.boundary_bracket[1], robustness.unit)}<br><small>${escapeHtml(String(boundary.from_decision).toUpperCase())} → ${escapeHtml(String(boundary.to_decision).toUpperCase())}</small>`
+      : 'NOT OBSERVED IN SAMPLED RANGE';
+    return `<div class="card" style="padding:10px;margin-bottom:10px">
+      <div class="metric-label">COUNTERFACTUAL ROBUSTNESS</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px;margin-top:7px">
+        <div><span class="metric-label">Original decision</span><br><strong>${escapeHtml(String(baseline.decision || '--').toUpperCase())}</strong></div>
+        <div><span class="metric-label">Original ${escapeHtml(meta.label)}</span><br><strong>${baseline.value == null ? '--' : valueWithUnit(baseline.value, robustness.unit)}</strong></div>
+        <div><span class="metric-label">Nearest sampled boundary</span><br><strong>${boundaryText}</strong></div>
+        <div><span class="metric-label">Distance to sampled boundary</span><br><strong>${distance.available ? `${valueWithUnit(distance.min, distance.unit)}–${valueWithUnit(distance.max, distance.unit)}` : '--'}</strong></div>
+        <div><span class="metric-label">Sampled local robustness</span><br><strong>${escapeHtml(String(local.classification || 'UNAVAILABLE').replace(/_/g, ' '))}</strong></div>
+      </div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:8px">Robustness is descriptive within the sampled values only. Boundary brackets are observed sampled transitions, not interpolated thresholds.</div>
+    </div>`;
+  }
+
   function render1D(payload) {
     const field = payload.x && payload.x.field;
+    const meta = axisMeta(payload, 'x');
     const rows = (payload.points || []).map(point => {
       const overlay = point.realized_outcome || {};
-      return `<tr>
-        <td>${escapeHtml(point.scenario && point.scenario[field])}</td>
+      return `<tr${point.is_baseline ? ' style="outline:2px solid var(--accent-color);outline-offset:-2px"' : ''}>
+        <td>${valueWithUnit(point.scenario && point.scenario[field], meta.unit)}${point.is_baseline ? ' <strong>BASELINE</strong>' : ''}</td>
         <td><span class="replay-verdict ${decisionClass(point.decision)}" style="display:inline-block;padding:3px 6px">${escapeHtml(String(point.decision || '--').toUpperCase())}</span></td>
         <td>${escapeHtml(point.stage || '--')}</td>
         <td>${escapeHtml((point.reasons || []).join('; ') || '--')}</td>
@@ -80,29 +113,32 @@
       </tr>`;
     }).join('');
     return `
+      ${renderRobustness(payload)}
       <div class="table-scroll"><table>
-        <thead><tr><th>${escapeHtml(field)}</th><th>Decision</th><th>Stage</th><th>Reason</th><th>Realized Context</th></tr></thead>
+        <thead><tr><th>${escapeHtml(meta.label)}${meta.unit !== 'unspecified' ? ` (${escapeHtml(meta.unit)})` : ''}</th><th>Decision</th><th>Stage</th><th>Reason</th><th>Realized Context</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
-      ${renderBoundary(payload.boundary_analysis)}`;
+      ${renderBoundary(payload.boundary_analysis, meta.unit)}`;
   }
 
   function render2D(payload) {
     const x = payload.x || {};
     const y = payload.y || {};
-    const header = (x.values || []).map(value => `<th>${escapeHtml(value)}</th>`).join('');
+    const xMeta = axisMeta(payload, 'x');
+    const yMeta = axisMeta(payload, 'y');
+    const header = (x.values || []).map(value => `<th>${valueWithUnit(value, xMeta.unit)}</th>`).join('');
     const rows = (payload.matrix || []).map((row, index) => `<tr>
-      <th>${escapeHtml((y.values || [])[index])}</th>
+      <th>${valueWithUnit((y.values || [])[index], yMeta.unit)}</th>
       ${row.map(point => {
         const overlay = point.realized_outcome || {};
         const title = `${point.stage || '--'}${(point.reasons || []).length ? ` — ${(point.reasons || []).join('; ')}` : ''}${overlay.available ? ` — ${overlay.interpretation}` : ''}`;
-        return `<td title="${escapeHtml(title)}"><span class="replay-verdict ${decisionClass(point.decision)}" style="display:inline-block;padding:4px 6px">${escapeHtml(String(point.decision || '--').toUpperCase())}</span></td>`;
+        return `<td title="${escapeHtml(title)}"${point.is_baseline ? ' style="outline:2px solid var(--accent-color);outline-offset:-2px"' : ''}><span class="replay-verdict ${decisionClass(point.decision)}" style="display:inline-block;padding:4px 6px">${escapeHtml(String(point.decision || '--').toUpperCase())}${point.is_baseline ? ' · BASELINE' : ''}</span></td>`;
       }).join('')}
     </tr>`).join('');
     const nonMonotonicRows = (payload.row_boundary_analysis || []).filter(item => item.monotonicity === 'non_monotonic').length;
     const nonMonotonicCols = (payload.column_boundary_analysis || []).filter(item => item.monotonicity === 'non_monotonic').length;
     return `
-      <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">Rows: ${escapeHtml(y.field)} · Columns: ${escapeHtml(x.field)} · Surface: ${escapeHtml(payload.surface_monotonicity || '--')}</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">Rows: ${escapeHtml(yMeta.label)} (${escapeHtml(yMeta.unit)}) · Columns: ${escapeHtml(xMeta.label)} (${escapeHtml(xMeta.unit)}) · Surface: ${escapeHtml(payload.surface_monotonicity || '--')}</div>
       <div class="table-scroll"><table>
         <thead><tr><th>${escapeHtml(y.field)} \\ ${escapeHtml(x.field)}</th>${header}</tr></thead>
         <tbody>${rows}</tbody>
@@ -133,12 +169,13 @@
       if (!selectedDecisionId) throw new Error('Select a decision first.');
       const xField = wrapper.querySelector('[data-sens-x-field]').value;
       const yField = wrapper.querySelector('[data-sens-y-field]').value;
+      const samplingMode = wrapper.querySelector('[data-sens-mode]').value;
       const body = {
-        x: { field: xField, values: parseValues(wrapper.querySelector('[data-sens-x-values]').value, 'X') },
+        x: samplingMode === 'manual' ? { field: xField, values: parseValues(wrapper.querySelector('[data-sens-x-values]').value, 'X') } : { field: xField, preset: samplingMode },
         fixed_scenario: parseFixed(wrapper.querySelector('[data-sens-fixed]').value),
         outcome_horizon: wrapper.querySelector('[data-sens-horizon]').value || '4h'
       };
-      if (yField) body.y = { field: yField, values: parseValues(wrapper.querySelector('[data-sens-y-values]').value, 'Y') };
+      if (yField) body.y = samplingMode === 'manual' ? { field: yField, values: parseValues(wrapper.querySelector('[data-sens-y-values]').value, 'Y') } : { field: yField, preset: samplingMode };
       const target = document.getElementById(RESULT_ID);
       if (target) target.textContent = 'Running bounded deterministic sensitivity replay...';
       const response = await fetch(`/api/decisions/${encodeURIComponent(selectedDecisionId)}/sensitivity`, {
@@ -168,6 +205,7 @@
       <h4 style="margin:0 0 6px">Counterfactual Sensitivity / Decision Boundary Map</h4>
       <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">Run bounded numeric sweeps over this decision's immutable replay inputs. Values are replayed exactly as supplied; boundary intervals are observed brackets, not interpolated thresholds.</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px">
+        <label class="metric-label">Sampling mode<select data-sens-mode class="form-select"><option value="local">LOCAL PRESET</option><option value="standard" selected>STANDARD PRESET</option><option value="wide">WIDE PRESET</option><option value="manual">MANUAL</option></select></label>
         <label class="metric-label">X field<select data-sens-x-field class="form-select">${fieldOptions(false)}</select></label>
         <label class="metric-label">X values<input data-sens-x-values class="form-input" value="10,20,30,40,50,60,70,80"></label>
         <label class="metric-label">Y field (optional)<select data-sens-y-field class="form-select">${fieldOptions(true)}</select></label>
@@ -181,6 +219,14 @@
       </div>
       <div id="${RESULT_ID}" style="margin-top:12px"></div>`;
     panel.appendChild(wrapper);
+    const mode = wrapper.querySelector('[data-sens-mode]');
+    const syncMode = () => {
+      const manual = mode.value === 'manual';
+      wrapper.querySelector('[data-sens-x-values]').disabled = !manual;
+      wrapper.querySelector('[data-sens-y-values]').disabled = !manual;
+    };
+    mode.addEventListener('change', syncMode);
+    syncMode();
     wrapper.querySelector('[data-run-sensitivity]').addEventListener('click', () => runSensitivity(wrapper));
   }
 

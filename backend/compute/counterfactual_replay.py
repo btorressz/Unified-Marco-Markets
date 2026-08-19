@@ -116,9 +116,18 @@ def _validate_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
-def _record_change(applied: dict[str, Any], field: str, component: str, path: str, original: Any, value: Any) -> None:
+def _record_change(
+    applied: dict[str, Any],
+    field: str,
+    component: str,
+    path: str,
+    original: Any,
+    value: Any,
+    *,
+    semantic_value: bool = True,
+) -> None:
     entry = applied.setdefault(field, {"original": [], "counterfactual": value, "components": []})
-    entry["original"].append({"path": path, "value": original})
+    entry["original"].append({"path": path, "value": original, "semantic_value": semantic_value})
     if component not in entry["components"]:
         entry["components"].append(component)
 
@@ -168,7 +177,10 @@ def _apply_macro(inputs: dict[str, Any], field: str, value: Any, applied: dict[s
         _set_context(heuristic, "shock_score", value, field, applied)
         changed = _set_ml_feature(ml, "shock_score", value, field, applied)
         if changed:
+            original_count = len((applied.get(field) or {}).get("original") or [])
             _set_ml_feature(ml, "shock_abs", abs(float(value)), field, applied)
+            if len((applied.get(field) or {}).get("original") or []) > original_count:
+                applied[field]["original"][-1]["semantic_value"] = False
     elif field == "vol_regime":
         _set_context(heuristic, "vol_regime", value, field, applied)
         encoded = build_features({"vol_regime": value})["features"]["vol_regime_encoded"]
@@ -267,7 +279,10 @@ def _apply_execution(inputs: dict[str, Any], field: str, value: Any, applied: di
         if size is not None and price > 0 and "order_notional" in data:
             original = data["order_notional"]
             data["order_notional"] = abs(float(size) * price)
-            _record_change(applied, field, "execution_boundary", "execution_boundary.data.order_notional", original, data["order_notional"])
+            _record_change(
+                applied, field, "execution_boundary", "execution_boundary.data.order_notional",
+                original, data["order_notional"], semantic_value=False,
+            )
 
 
 def _apply_scenario(record: dict[str, Any], scenario: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
@@ -304,6 +319,56 @@ def prepare_counterfactual(
         "model_loader": model_loader,
         "baseline": baseline,
         "original": baseline["replayed_decision"],
+    }
+
+
+def recorded_counterfactual_baseline(record: dict[str, Any], field: str) -> dict[str, Any]:
+    """Read a numeric field only through its immutable replay-application mapping.
+
+    This deliberately applies a probe to a deep copy, so it cannot mutate the audit
+    record or consult runtime state. Direct semantic locations are distinguished from
+    dependent values such as ``shock_abs`` and calculated order notional.
+    """
+    if field not in _NUMERIC_FIELDS:
+        raise CounterfactualUnavailable(f"unsupported numeric counterfactual field: {field}")
+    try:
+        _, applied, not_applicable = _apply_scenario(record, {field: 0.0})
+    except CounterfactualUnavailable:
+        return {"status": "not_applicable", "consistent": False, "values": []}
+    if field in not_applicable or field not in applied:
+        return {"status": "not_applicable", "consistent": False, "values": []}
+
+    originals = [
+        item for item in applied[field].get("original", [])
+        if item.get("semantic_value", True)
+    ]
+    numeric: list[float] = []
+    for item in originals:
+        try:
+            value = float(item.get("value"))
+        except (TypeError, ValueError):
+            return {
+                "status": "unavailable", "consistent": False, "values": [],
+                "reason": "recorded semantic value is not numeric",
+            }
+        if not math.isfinite(value):
+            return {
+                "status": "unavailable", "consistent": False, "values": [],
+                "reason": "recorded semantic value is not finite",
+            }
+        if not any(math.isclose(value, known, rel_tol=1e-12, abs_tol=1e-12) for known in numeric):
+            numeric.append(value)
+
+    if not numeric:
+        return {"status": "not_applicable", "consistent": False, "values": []}
+    if len(numeric) != 1:
+        return {"status": "inconsistent", "consistent": False, "values": sorted(numeric)}
+    return {
+        "status": "available",
+        "value": numeric[0],
+        "values": numeric,
+        "consistent": True,
+        "sources": [item["path"] for item in originals],
     }
 
 
