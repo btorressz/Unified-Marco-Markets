@@ -1,5 +1,6 @@
 from backend.compute.conflict_escalation import score_conflicts, conflict_market_impact
-from backend.compute.geopolitical_evidence import match_evidence, proxy_evidence
+from backend.compute.geopolitical_evidence import authoritative_evidence, match_evidence, proxy_evidence
+from backend.ingest.quality import authoritative_evidence_envelope
 from backend.compute.geopolitical_market_impact import estimate_market_impact
 from backend.compute.geopolitical_risk import compute_geopolitical_index, build_geopolitical_events
 from backend.compute.sanctions_risk import score_sanctions
@@ -88,6 +89,20 @@ def test_market_impact_is_expected_not_realized_or_causal():
     conflict_impacts = conflict_market_impact(score_conflicts(_gdelt()))
     assert conflict_impacts["observed_market_reaction"] is False
     assert conflict_impacts["causal_claim"] is False
+
+
+def test_only_valid_v2_records_are_authoritative_observed_evidence():
+    record = authoritative_evidence_envelope(
+        source="test", source_id="official_test", authority="Test Authority",
+        jurisdiction=None, dataset="Test", observation={"value": 1},
+        source_record_id="1", retrieved_at="2026-08-19T00:00:00+00:00",
+    )
+    assert authoritative_evidence(record, source_id="official_test") == {
+        "claim_type": "observed_evidence", "observed": True, "proxy": False,
+        "scenario": False, "authoritative_evidence": True,
+        "evidence_basis": "normalized_authoritative_provider_record",
+    }
+    assert authoritative_evidence({"source": "OFAC"})["authoritative_evidence"] is False
 
 
 def test_composite_index_and_normalized_events_preserve_proxy_boundary():

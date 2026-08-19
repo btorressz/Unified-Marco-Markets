@@ -8,6 +8,7 @@ from backend.compute.sanctions_risk import score_sanctions
 from backend.compute.conflict_escalation import score_conflicts, normalized_conflict_events
 from backend.compute.shipping_energy_risk import score_chokepoints, score_energy_shock
 from backend.ingest.quality import is_observed_snapshot
+from backend.ingest.quality import is_authoritative_observation
 
 
 def _now() -> str:
@@ -65,11 +66,11 @@ def compute_geopolitical_index(state: dict[str, Any] | None = None) -> dict[str,
         "overall_score": round(overall, 2), "regime": _regime(overall), **{k: round(v, 2) for k, v in components.items()},
         "regional_breakdown": regional, "top_drivers": [{"driver": k, "score": round(v, 2)} for k, v in top], "affected_assets": affected,
         "confidence": confidence, "data_quality": "degraded" if degraded else "healthy",
-        "provider_status": {"gdelt": "ok" if gdelt else "degraded", "wits": "ok" if wits else "degraded", "ofac_public_download": "not_configured" if not state.get("ofac") else "ok"},
+        "provider_status": {"gdelt": "ok" if gdelt else "degraded", "wits": "ok" if wits else "degraded", "ofac_public_download": (state.get("ofac") or {}).get("provider_status", "not_configured") if is_authoritative_observation(state.get("ofac"), source_id="ofac_sanctions") else "not_configured"},
         "claim_type": "composite_research_proxy", "observed": False, "proxy": True,
         "evidence_basis": "weighted_proxy_components_with_source_context",
         "evidence_count": evidence_count,
-        "authoritative_event_evidence": bool(state.get("ofac")),
+        "authoritative_component_evidence": is_authoritative_observation(state.get("ofac"), source_id="ofac_sanctions"),
         "limitations": ["The composite index is a deterministic research proxy; it is not itself an observed geopolitical event."],
         "reasoning": ["Weighted index combines sanctions, conflict, shipping, energy, cyber/policy, tariff, and market stress components", "All outputs are informational/proposal-only; no autonomous trading"], "timestamp": _now(),
         "component_details": {"sanctions": sanctions, "conflicts": conflicts, "shipping": shipping, "energy": energy},

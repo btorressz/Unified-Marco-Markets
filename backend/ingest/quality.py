@@ -10,6 +10,7 @@ from typing import Any
 
 
 OBSERVATION_CONTRACT_VERSION = 1
+AUTHORITATIVE_EVIDENCE_CONTRACT_VERSION = 2
 
 
 def observation_quality(
@@ -24,9 +25,10 @@ def observation_quality(
     as_of: Any = None,
     transformation: str | None = None,
     transformation_version: str | int | None = None,
+    contract_version: int = OBSERVATION_CONTRACT_VERSION,
 ) -> dict[str, Any]:
     return {
-        "contract_version": OBSERVATION_CONTRACT_VERSION,
+        "contract_version": contract_version,
         "source": source,
         "source_id": source_id,
         "available": bool(available),
@@ -39,6 +41,62 @@ def observation_quality(
         "transformation": transformation,
         "transformation_version": transformation_version,
     }
+
+
+def authoritative_evidence_envelope(
+    *, source: str, source_id: str, authority: str, jurisdiction: str | None,
+    dataset: str | None, observation: dict[str, Any], retrieved_at: Any,
+    source_record_id: str | None = None, source_record_type: str | None = None,
+    published_at: Any = None, effective_at: Any = None,
+    provider_updated_at: Any = None, change_type: str | None = None,
+    revision: str | None = None, dataset_version: str | None = None,
+    content_hash: str | None = None, transformation: str | None = None,
+    transformation_version: str | int | None = None,
+) -> dict[str, Any]:
+    """Build the provider-independent v2 envelope for an observed official record."""
+    quality = observation_quality(
+        source=source, source_id=source_id, available=True, authoritative=True,
+        execution_eligible=False, synthetic=False, degraded=False,
+        as_of=provider_updated_at or retrieved_at, transformation=transformation,
+        transformation_version=transformation_version,
+        contract_version=AUTHORITATIVE_EVIDENCE_CONTRACT_VERSION,
+    )
+    return {
+        "quality": quality,
+        "authority": {"name": authority, "jurisdiction": jurisdiction, "dataset": dataset},
+        "evidence": {
+            "source_record_id": source_record_id,
+            "source_record_type": source_record_type,
+            "published_at": published_at,
+            "effective_at": effective_at,
+            "provider_updated_at": provider_updated_at,
+            "retrieved_at": retrieved_at,
+            "change_type": change_type,
+            "revision": revision,
+            "dataset_version": dataset_version,
+            "content_hash": content_hash,
+            "transformation": transformation,
+            "transformation_version": transformation_version,
+        },
+        "observation": observation,
+    }
+
+
+def is_authoritative_observation(value: dict[str, Any] | None, *, source_id: str | None = None) -> bool:
+    """Validate v2 authority flags; names and object truthiness are never evidence."""
+    if not isinstance(value, dict):
+        return False
+    quality = value.get("quality")
+    if not isinstance(quality, dict):
+        return False
+    return bool(
+        quality.get("contract_version") == AUTHORITATIVE_EVIDENCE_CONTRACT_VERSION
+        and quality.get("available") is True
+        and quality.get("observed") is True
+        and quality.get("authoritative") is True
+        and quality.get("synthetic") is False
+        and (source_id is None or quality.get("source_id") == source_id)
+    )
 
 
 def is_observed_snapshot(snapshot: dict[str, Any] | None) -> bool:

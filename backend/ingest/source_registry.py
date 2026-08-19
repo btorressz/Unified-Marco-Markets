@@ -3,11 +3,13 @@ from backend.core.state_keys import (
     COINGECKO_SOL_USD,
     COINGECKO_SOL_USD_NATIVE,
     GDELT_LATEST,
+    OFAC_SANCTIONS,
     KRAKEN_SOL_USD,
     KRAKEN_SOL_USD_NATIVE,
     PYTH_SOL_USD,
     PYTH_SOL_USD_NATIVE,
     WITS_AGGREGATE,
+    WTO_TRADE,
     YFINANCE_SOL_USD,
     YFINANCE_SOL_USD_NATIVE,
 )
@@ -22,6 +24,8 @@ SOURCES = (
     {"source_id": "drift_funding_sol_perp", "provider": "Drift", "category": "funding", "enabled": True, "expected_cadence_seconds": 60, "authoritative": True, "fallback_chain": [], "storage_target": "funding_ticks", "snapshot_key": "funding:drift:SOL-PERP", "description": "Drift SOL perpetual funding rate."},
     {"source_id": "wits_tariffs", "provider": "WITS", "category": "macro", "enabled": True, "expected_cadence_seconds": 21600, "authoritative": True, "execution_eligible": False, "observation_contract_version": 1, "fallback_chain": [], "storage_target": "redis_snapshot+data_provenance", "snapshot_key": WITS_AGGREGATE, "description": "World Bank WITS observed tariff records plus derived aggregate freshness; provider failures never become synthetic canonical observations."},
     {"source_id": "gdelt_macro_news", "provider": "GDELT", "category": "macro_news", "enabled": True, "expected_cadence_seconds": 300, "authoritative": False, "execution_eligible": False, "observation_contract_version": 1, "fallback_chain": [], "storage_target": "redis_snapshot+data_provenance", "snapshot_key": GDELT_LATEST, "description": "GDELT aggregate macro-news shock plus bounded normalized article evidence for non-authoritative geopolitical research context."},
+    {"source_id": "ofac_sanctions", "provider": "OFAC", "category": "sanctions", "enabled": True, "expected_cadence_seconds": 21600, "authoritative": True, "execution_eligible": False, "research_fallback": False, "observation_contract_version": 2, "fallback_chain": [], "storage_target": "redis_snapshot+data_provenance", "snapshot_key": OFAC_SANCTIONS, "description": "Official OFAC SLS SDN observations with deterministic in-process snapshot deltas and bounded runtime state."},
+    {"source_id": "wto_trade", "provider": "WTO", "category": "trade", "enabled": True, "expected_cadence_seconds": 86400, "authoritative": True, "execution_eligible": False, "research_fallback": False, "observation_contract_version": 2, "fallback_chain": [], "storage_target": "redis_snapshot+data_provenance", "snapshot_key": WTO_TRADE, "description": "Optional-key, bounded WTO Timeseries authoritative trade observations for research."},
 )
 
 SOURCE_REGISTRY = {source["source_id"]: source for source in SOURCES}

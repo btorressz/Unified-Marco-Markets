@@ -23,6 +23,8 @@ def test_registry_has_stable_source_contracts():
         "drift_funding_sol_perp",
         "wits_tariffs",
         "gdelt_macro_news",
+        "ofac_sanctions",
+        "wto_trade",
     }
     assert expected == set(SOURCE_REGISTRY)
     assert SOURCE_REGISTRY["pyth_sol_usd"]["fallback_chain"] == ["kraken_sol_usd", "coingecko_sol_usd", "yfinance_crypto_research"]
@@ -34,6 +36,8 @@ def test_registry_has_stable_source_contracts():
     assert yahoo["authoritative"] is False
     assert yahoo["research_fallback"] is True
     assert yahoo["execution_eligible"] is False
+    assert SOURCE_REGISTRY["ofac_sanctions"]["observation_contract_version"] == 2
+    assert SOURCE_REGISTRY["wto_trade"]["execution_eligible"] is False
 
 
 def test_wits_registry_uses_canonical_aggregate_freshness_key():

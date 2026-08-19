@@ -66,6 +66,8 @@ PRICE_INTEGRITY_LEGACY_LATEST = "price:integrity:latest"
 WITS_AGGREGATE = "wits:tariff:aggregate"
 WITS_LATEST_LEGACY = "wits:latest"
 GDELT_LATEST = "gdelt:latest"
+OFAC_SANCTIONS = "sanctions:ofac:latest"
+WTO_TRADE = "trade:wto:latest"
 
 STABLECOIN_HEALTH = "stablecoin:health:latest"
 STABLECOIN_HEALTH_LEGACY = "stablecoin:health"

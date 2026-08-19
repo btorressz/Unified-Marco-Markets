@@ -10,6 +10,8 @@ from backend.core.event_bus import EventBus
 from backend.core.state_store import StateStore
 from backend.ingest.wits_ingest import WITSIngestor
 from backend.ingest.gdelt_ingest import GDELTIngestor
+from backend.ingest.ofac_ingest import OFACIngestor
+from backend.ingest.wto_ingest import WTOIngestor
 from backend.ingest.kraken_ingest import KrakenIngestor
 from backend.ingest.coingecko_ingest import CoinGeckoIngestor
 from backend.ingest.pyth_ingest import PythIngestor
@@ -33,6 +35,8 @@ class IngestScheduler:
 
         self.wits = WITSIngestor(event_bus=self.event_bus, state_store=self.state_store)
         self.gdelt = GDELTIngestor(event_bus=self.event_bus, state_store=self.state_store)
+        self.ofac = OFACIngestor(state_store=self.state_store)
+        self.wto = WTOIngestor(state_store=self.state_store)
         self.kraken = KrakenIngestor(state_store=self.state_store)
         self.coingecko = CoinGeckoIngestor(state_store=self.state_store)
         self.pyth = PythIngestor(state_store=self.state_store)
@@ -48,6 +52,8 @@ class IngestScheduler:
             self._run_gdelt, "interval", minutes=5, id="gdelt_ingest",
             name="GDELT News Ingest", replace_existing=True,
         )
+        self.scheduler.add_job(self._run_ofac, "interval", hours=6, id="ofac_ingest", name="OFAC Sanctions Ingest", replace_existing=True)
+        self.scheduler.add_job(self._run_wto, "interval", hours=24, id="wto_ingest", name="WTO Trade Ingest", replace_existing=True)
         self.scheduler.add_job(
             self._run_kraken, "interval", seconds=30, id="kraken_ingest",
             name="Kraken Price Ingest", replace_existing=True,
@@ -151,6 +157,18 @@ class IngestScheduler:
                 logger.debug("GDELT ingest completed")
         except Exception:
             logger.error("GDELT ingest job failed", exc_info=True)
+
+    async def _run_ofac(self) -> None:
+        try:
+            await self._run_source("ofac_sanctions", "ofac", lambda context: self.ofac.fetch(run_context=context))
+        except Exception:
+            logger.error("OFAC ingest job failed", exc_info=True)
+
+    async def _run_wto(self) -> None:
+        try:
+            await self._run_source("wto_trade", "wto", lambda context: self.wto.fetch(run_context=context))
+        except Exception:
+            logger.error("WTO ingest job failed", exc_info=True)
 
     async def _run_kraken(self) -> None:
         try:
