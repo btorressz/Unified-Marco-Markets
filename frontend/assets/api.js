@@ -72,6 +72,7 @@ const API = (() => {
     getIndexComponents: () => fetchJSON('/api/index/components'),
 
     getMarketLatest: () => fetchJSON('/api/markets/latest'),
+    getResearchHistoryCoverage: (params = {}) => fetchJSON(`/api/markets/research-history/coverage?${new URLSearchParams(Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== '')).toString()}`),
     getMarketHistory: (venue = 'hyperliquid', window = '1h') =>
       fetchJSON(`/api/markets/history?venue=${venue}&window=${window}`),
     getFunding: () => fetchJSON('/api/markets/funding'),

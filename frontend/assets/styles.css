@@ -1230,3 +1230,10 @@ details { margin-top:8px; } details summary { cursor:pointer;color:var(--text-se
 .reaction-contradict { color:var(--red, #e53e3e); }
 .reaction-mixed, .reaction-unscorable, .reaction-not-matured { color:var(--warning, #d69e2e); }
 .reaction-unavailable { color:var(--text-muted); }
+.research-history-boundary{display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px 16px;padding-bottom:10px;border-bottom:1px solid var(--border-color);font-size:11px;color:var(--text-muted)}
+.research-history-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:10px}.research-history-row{min-width:0;padding:10px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary)}
+.research-history-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}.research-history-heading .quality-strip{justify-content:flex-end;margin-top:0}
+.research-history-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:10px}.research-history-metrics span,.research-history-meta span{font-size:12px;overflow-wrap:anywhere}.research-history-metrics b,.research-history-meta b{display:block;color:var(--text-muted);font-size:9px;text-transform:uppercase}
+.research-history-meta{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin-top:10px;color:var(--text-secondary)}
+.reaction-history{margin:12px 0;padding:10px;border:1px solid var(--border-color);border-radius:6px}.reaction-history h3{margin:0 0 8px;font-size:11px;color:var(--text-secondary)}.reaction-history-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--border-color)}.reaction-history-row:first-of-type{border-top:0}.reaction-history-row>div:first-child{display:grid;grid-template-columns:auto auto;gap:2px 8px;font-size:12px}.reaction-history-row small{grid-column:1/-1;color:var(--text-muted);overflow-wrap:anywhere}
+@media(max-width:900px){.research-history-list{grid-template-columns:1fr}.reaction-history-row{align-items:flex-start;flex-direction:column}.reaction-history-row .quality-strip{margin-top:2px}}
