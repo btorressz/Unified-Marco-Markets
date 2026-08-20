@@ -22,9 +22,11 @@ from backend.agents.sanctions_agent import SanctionsAgent
 from backend.agents.conflict_agent import ConflictAgent
 from backend.agents.energy_shock_agent import EnergyShockAgent
 from backend.agents.protection_agent import ProtectionAgent
+from backend.data.repositories.research_event_repo import ResearchEventRepository
 
 router = APIRouter(prefix="/api/geopolitical", tags=["geopolitical"])
 _store = StateStore()
+_research_events = ResearchEventRepository()
 
 
 def _state() -> dict[str, Any]:
@@ -55,19 +57,38 @@ def geopolitical_events():
     return build_geopolitical_events(_idx())
 
 
-def _reaction_events() -> list[dict[str, Any]]:
-    return [normalize_study_event(event) for event in geopolitical_events().get("events", [])[:MAX_EVENTS]]
+def _durable_study_event(row):
+    event=normalize_study_event({**row,"event_id":str(row.get("id") or row.get("event_key")),
+        "authoritative_evidence":row.get("authoritative") is True,"persisted":True})
+    event["study_eligible"]=row.get("study_eligible") is True
+    return event
+
+
+def _reaction_events(limit=MAX_EVENTS, source=None, event_family=None, event_type=None, start_ts=None, end_ts=None):
+    try:
+        durable=[_durable_study_event(row) for row in _research_events.list_events(limit=limit,event_family=event_family,
+            event_type=event_type,source_id=source,study_eligible=True,start_ts=start_ts,end_ts=end_ts)]
+    except Exception:
+        durable=[]
+    runtime=[{**normalize_study_event(event),"persisted":False} for event in geopolitical_events().get("events", [])[:limit]]
+    seen={row["event_id"] for row in durable}
+    return (durable+[row for row in runtime if row["event_id"] not in seen])[:limit]
 
 
 @router.get("/reaction-lab/events")
-def reaction_lab_events():
-    events = _reaction_events()
+def reaction_lab_events(limit: int=MAX_EVENTS, source: str|None=None, event_family: str|None=None,
+                        event_type: str|None=None, start_ts: str|None=None, end_ts: str|None=None):
+    limit=max(1,min(limit,MAX_EVENTS)); events = _reaction_events(limit,source,event_family,event_type,start_ts,end_ts)
     return {"events": events, "count": len(events), "max_events": MAX_EVENTS, "read_only": True}
 
 
 @router.get("/reaction-lab/events/{event_id}")
 def reaction_lab_study(event_id: str):
-    event = next((row for row in _reaction_events() if row["event_id"] == event_id), None)
+    try:
+        durable=_research_events.get_event(event_id=event_id) or _research_events.get_event(event_key=event_id)
+    except Exception:
+        durable=None
+    event=_durable_study_event(durable) if durable else next((row for row in _reaction_events() if row["event_id"] == event_id), None)
     if event is None:
         raise HTTPException(status_code=404, detail="Reaction Lab event not found")
     if not event["study_eligible"]:

@@ -73,6 +73,14 @@ class IngestRepository:
 
     def get_source_runs(self, source_id, limit=RECENT_WINDOW_RUNS): return self.get_recent_runs(source_id=source_id,limit=limit)
 
+    def get_latest_completed_run(self, source_id):
+        rows=execute_query("SELECT * FROM ingest_runs WHERE source_id=%s AND status='success' AND completed_at IS NOT NULL ORDER BY completed_at DESC LIMIT 1",(source_id,))
+        return rows[0] if rows else None
+
+    def load_source_observations_for_run(self, source_id, ingest_run_id, artifact_type, limit=100000):
+        limit=max(1,min(int(limit),100000))
+        return execute_query("SELECT * FROM data_provenance WHERE source_id=%s AND ingest_run_id=%s AND artifact_type=%s ORDER BY created_at ASC LIMIT %s",(source_id,ingest_run_id,artifact_type,limit))
+
     def get_provenance(self, source_id=None, ingest_run_id=None, artifact_type=None, artifact_id=None, start_ts=None, end_ts=None, limit=100):
         limit=max(1,min(int(limit),1000)); clauses=[]; params=[]
         for col,val,op in (("source_id",source_id,"="),("ingest_run_id",ingest_run_id,"="),("artifact_type",artifact_type,"="),("artifact_id",artifact_id,"="),("created_at",start_ts,">="),("created_at",end_ts,"<=")):

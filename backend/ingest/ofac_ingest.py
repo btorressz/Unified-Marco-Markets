@@ -13,6 +13,8 @@ import httpx
 from backend.core.state_keys import OFAC_SANCTIONS
 from backend.core.state_store import StateStore
 from backend.data.repositories.ingest_repo import IngestRepository
+from backend.data.repositories.research_event_repo import ResearchEventRepository
+from backend.compute.geopolitical_evidence import normalize_research_event
 from backend.ingest.quality import authoritative_evidence_envelope, observation_quality
 
 OFAC_SOURCE_ID = "ofac_sanctions"
@@ -76,11 +78,27 @@ def dataset_hash(records: list[dict[str, Any]]) -> str:
 
 
 class OFACIngestor:
-    def __init__(self, state_store=None, ingest_repo=None, client_factory=None):
+    def __init__(self, state_store=None, ingest_repo=None, client_factory=None, research_event_repo=None):
         self.state_store = state_store or StateStore()
         self.ingest_repo = ingest_repo or IngestRepository()
         self.client_factory = client_factory or (lambda: httpx.AsyncClient(timeout=60.0))
+        self.research_event_repo = research_event_repo or ResearchEventRepository()
         self._baseline: dict[str, tuple[str, dict[str, Any]]] | None = None
+
+    def _durable_baseline(self):
+        if not hasattr(self.ingest_repo, "get_latest_completed_run"): return None
+        run = self.ingest_repo.get_latest_completed_run(OFAC_SOURCE_ID)
+        if not run: return None
+        rows = self.ingest_repo.load_source_observations_for_run(
+            OFAC_SOURCE_ID, run["id"], "ofac_sanctions_observation", limit=100000)
+        baseline = {}
+        for row in rows:
+            metadata = row.get("metadata") or {}
+            if isinstance(metadata, str): metadata = json.loads(metadata)
+            record = metadata.get("observation")
+            if record and (uid := (record.get("observation") or {}).get("source_record_id")):
+                baseline[uid] = (record_hash(record), record)
+        return baseline or None
 
     @staticmethod
     def parse_xml(content: bytes, *, retrieved_at: str) -> list[dict[str, Any]]:
@@ -101,10 +119,14 @@ class OFACIngestor:
         return self.process_records(records, retrieved_at=retrieved_at, run_context=run_context)
 
     def process_records(self, records: list[dict[str, Any]], *, retrieved_at: str, run_context=None) -> dict[str, Any]:
+        if self._baseline is None:
+            self._baseline = self._durable_baseline()
         current = {r["observation"]["source_record_id"]: (record_hash(r), r) for r in records}
         first = self._baseline is None
         changes: list[dict[str, Any]] = []
         counts = {"added_count": 0, "updated_count": 0, "removed_count": 0, "unchanged_count": 0}
+        previous_dataset_hash = dataset_hash([row[1] for row in (self._baseline or {}).values()]) if not first else None
+        current_dataset_hash = dataset_hash(records)
         if not first:
             previous = self._baseline or {}
             for uid, (digest, record) in current.items():
@@ -112,13 +134,15 @@ class OFACIngestor:
                 record["evidence"]["change_type"] = change
                 counts[f"{change.lower()}_count"] += 1
                 if change != "UNCHANGED":
-                    changes.append({**record["observation"], "change_type": change, "change_detected_at": retrieved_at})
+                    changes.append({**record["observation"], "change_type": change, "change_detected_at": retrieved_at,
+                                    "previous_record_hash": previous.get(uid, (None,))[0], "current_record_hash": digest})
             for uid, (_, record) in previous.items():
                 if uid not in current:
                     counts["removed_count"] += 1
-                    changes.append({**record["observation"], "change_type": "REMOVED", "change_detected_at": retrieved_at})
+                    changes.append({**record["observation"], "change_type": "REMOVED", "change_detected_at": retrieved_at,
+                                    "previous_record_hash": record_hash(record), "current_record_hash": None})
         self._baseline = current
-        content_hash = dataset_hash(records)
+        content_hash = current_dataset_hash
         provenance_ids = []
         if run_context:
             run_context.record_received(len(records)); run_context.mark_success()
@@ -131,6 +155,22 @@ class OFACIngestor:
                 lineage={"provider": "OFAC SLS", "artifact": "official SDN XML", "transformation": "OFAC normalizer v1"},
             )
             if saved and saved.get("id") is not None: provenance_ids.append(str(saved["id"]))
+        for change in changes:
+            transition = {"change_type": change["change_type"], "previous_record_hash": change.get("previous_record_hash"),
+                          "current_record_hash": change.get("current_record_hash"), "previous_dataset_hash": previous_dataset_hash,
+                          "current_dataset_hash": current_dataset_hash}
+            event = normalize_research_event(
+                event_family="sanctions", event_type=f"OFAC_SANCTION_{change['change_type']}", source="OFAC",
+                source_id=OFAC_SOURCE_ID, source_record_id=change["source_record_id"], claim_type="observed_evidence",
+                event_timestamp=retrieved_at, event_time_basis="provider_change_detected_at_retrieval", transition=transition,
+                observed=True, authoritative=True, proxy=False, synthetic=False, study_eligible=True,
+                authority="U.S. Department of the Treasury / OFAC", jurisdiction="US", detected_at=retrieved_at,
+                retrieved_at=retrieved_at, effective_at=None, published_at=None, change_type=change["change_type"],
+                source_record_type=change.get("entity_type"), evidence_contract_version=2,
+                transformation="ofac_sls_xml_normalization", transformation_version="1", content_hash=change.get("current_record_hash"),
+                dataset_version=current_dataset_hash, payload=change, evidence=transition,
+                lineage={"ingest_run_id": str(getattr(run_context,"run_id","") or ""), "provenance_ids": provenance_ids})
+            self.research_event_repo.insert_event_idempotent(event)
         if run_context: run_context.record_persisted(len(records))
         snapshot = {
             "source": "OFAC", "source_id": OFAC_SOURCE_ID, "provider_status": "ok",

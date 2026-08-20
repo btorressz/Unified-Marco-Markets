@@ -1,4 +1,6 @@
 import logging
+import hashlib
+import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -10,6 +12,8 @@ from backend.core.event_bus import EventBus, EventType
 from backend.core.state_keys import WITS_AGGREGATE, WITS_LATEST_LEGACY
 from backend.core.state_store import StateStore
 from backend.data.repositories.ingest_repo import IngestRepository
+from backend.data.repositories.research_event_repo import ResearchEventRepository
+from backend.compute.geopolitical_evidence import normalize_research_event
 from backend.ingest.quality import observation_quality
 
 logger = logging.getLogger(__name__)
@@ -76,10 +80,12 @@ class WITSIngestor:
         event_bus: EventBus | None = None,
         state_store: StateStore | None = None,
         ingest_repo: IngestRepository | None = None,
+        research_event_repo: ResearchEventRepository | None = None,
     ):
         self.event_bus = event_bus or EventBus()
         self.state_store = state_store or StateStore()
         self.ingest_repo = ingest_repo or IngestRepository()
+        self.research_event_repo = research_event_repo or ResearchEventRepository()
 
     @staticmethod
     def _provider_dimensions(reporter: str, partner: str, product: str) -> dict[str, str]:
@@ -271,6 +277,15 @@ class WITSIngestor:
                     received_at=received_at,
                 )
                 persisted += int(bool(saved))
+                digest=hashlib.sha256(json.dumps(row,sort_keys=True,separators=(",",":"),default=str).encode()).hexdigest()
+                observed_at=received_at or datetime.now(timezone.utc).isoformat()
+                event=normalize_research_event(event_family="tariff_observation",event_type="WITS_TARIFF_OBSERVATION",
+                    source="WITS",source_id=WITS_SOURCE_ID,source_record_id="|".join(key_parts),claim_type="observed_evidence",
+                    event_timestamp=observed_at,event_time_basis="ingest_observed_at",transition={"content_hash":digest},
+                    observed=True,authoritative=True,study_eligible=False,retrieved_at=observed_at,
+                    transformation=WITS_TRANSFORMATION,transformation_version=str(WITS_TRANSFORMATION_VERSION),content_hash=digest,
+                    payload=row,evidence={"observation_period":row.get("year")},lineage={"ingest_run_id":str(run_context.run_id),"provenance_id":str(saved.get("id")) if saved else None,"provider_query":provider_query})
+                self.research_event_repo.insert_event_idempotent(event)
             except Exception:
                 logger.warning("Failed to persist WITS tariff observation provenance", exc_info=True)
         return persisted
