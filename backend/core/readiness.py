@@ -14,7 +14,7 @@ from backend.core.operator_auth import operator_auth_required
 from backend.core.price_authority import PriceAuthority
 from backend.core.risk_policy import RiskRuntimeState, configured_risk_policy
 from backend.core.redis_runtime import get_redis_runtime
-from backend.core.state_keys import PRICE_INTEGRITY, PRICE_INTEGRITY_LEGACY_LATEST
+from backend.core.state_keys import PRICE_INTEGRITY, PRICE_INTEGRITY_LEGACY_LATEST, price_integrity_key
 from backend.core.state_store import StateStore
 from backend.data.db import check_connection, check_required_tables
 from backend.ingest.source_registry import list_sources
@@ -27,6 +27,7 @@ _REQUIRED_LIVE_TABLES = (
     "decision_audit",
 )
 _PRICE_SYMBOL = "SOL/USD"
+_PRICE_SYMBOLS = ("BTC/USD", "ETH/USD", "SOL/USD")
 
 
 def _check(status: str, **details: Any) -> dict[str, Any]:
@@ -88,30 +89,52 @@ def _redis_check() -> dict[str, Any]:
 
 def _market_data_check() -> dict[str, Any]:
     authority = PriceAuthority()
-    price = authority.get_price(_PRICE_SYMBOL)
-    raw_source = next(
-        (row for row in authority.get_all_venues(_PRICE_SYMBOL) if row.get("venue") == price.source),
-        {},
-    )
-    source_ts = _parse_ts(raw_source.get("ts"))
-    age = _utc_age_seconds(source_ts) if price.found and source_ts is not None else None
-    fresh = bool(price.found and source_ts is not None and age is not None and age <= config.PRICE_FRESHNESS_THRESHOLD_S)
-
     store = StateStore()
-    integrity = store.get_snapshot(PRICE_INTEGRITY) or store.get_snapshot(PRICE_INTEGRITY_LEGACY_LATEST) or {}
-    integrity_status = str(integrity.get("status") or integrity.get("integrity_status") or "UNKNOWN").upper()
+    symbol_checks: dict[str, dict[str, Any]] = {}
 
-    status = "ok" if fresh and integrity_status == "OK" else "warning" if fresh else "error"
+    for symbol in _PRICE_SYMBOLS:
+        price = authority.get_price(symbol)
+        raw_source = next(
+            (row for row in authority.get_all_venues(symbol) if row.get("venue") == price.source),
+            {},
+        )
+        source_ts = _parse_ts(raw_source.get("ts"))
+        age = _utc_age_seconds(source_ts) if price.found and source_ts is not None else None
+        fresh = bool(price.found and source_ts is not None and age is not None and age <= config.PRICE_FRESHNESS_THRESHOLD_S)
+
+        integrity = store.get_snapshot(price_integrity_key(symbol)) or {}
+        if symbol == _PRICE_SYMBOL and not integrity:
+            integrity = store.get_snapshot(PRICE_INTEGRITY) or store.get_snapshot(PRICE_INTEGRITY_LEGACY_LATEST) or {}
+        integrity_status = str(integrity.get("status") or integrity.get("integrity_status") or "UNKNOWN").upper()
+
+        symbol_checks[symbol] = {
+            "source": price.source,
+            "price_found": price.found,
+            "source_timestamp_present": source_ts is not None,
+            "age_seconds": round(age, 2) if age is not None else None,
+            "maximum_ready_age_seconds": config.PRICE_FRESHNESS_THRESHOLD_S,
+            "fresh": fresh,
+            "integrity_status": integrity_status,
+            "blocking_live": not fresh or integrity_status != "OK",
+        }
+
+    all_fresh = all(row["fresh"] for row in symbol_checks.values())
+    all_integrity_ok = all(row["integrity_status"] == "OK" for row in symbol_checks.values())
+    status = "ok" if all_fresh and all_integrity_ok else "warning" if all_fresh else "error"
+    legacy = symbol_checks[_PRICE_SYMBOL]
+
     return _check(
         status,
         symbol=_PRICE_SYMBOL,
-        source=price.source,
-        price_found=price.found,
-        source_timestamp_present=source_ts is not None,
-        age_seconds=round(age, 2) if age is not None else None,
+        monitored_symbols=list(_PRICE_SYMBOLS),
+        symbols=symbol_checks,
+        source=legacy["source"],
+        price_found=legacy["price_found"],
+        source_timestamp_present=legacy["source_timestamp_present"],
+        age_seconds=legacy["age_seconds"],
         maximum_ready_age_seconds=config.PRICE_FRESHNESS_THRESHOLD_S,
-        integrity_status=integrity_status,
-        blocking_live=not fresh or integrity_status != "OK",
+        integrity_status=legacy["integrity_status"],
+        blocking_live=not (all_fresh and all_integrity_ok),
     )
 
 
@@ -211,7 +234,6 @@ def _execution_config_check() -> dict[str, Any]:
 
 
 def build_readiness() -> dict[str, Any]:
-    """Return one authoritative readiness statement for the configured mode."""
     live_mode = config.EXECUTION_MODE == "live" or config.LIVE_EXECUTION_ENABLED
     checks = {
         "database": _database_check(),
@@ -265,6 +287,18 @@ def _reason(name: str, result: dict[str, Any]) -> str:
     if name == "redis":
         return "Redis unavailable; shared idempotency/risk state is unavailable"
     if name == "market_data":
+        symbols = result.get("symbols") or {}
+        if symbols:
+            unavailable = [symbol for symbol, row in symbols.items() if not row.get("price_found")]
+            if unavailable:
+                return "No execution price is available for: " + ", ".join(unavailable)
+            missing_ts = [symbol for symbol, row in symbols.items() if not row.get("source_timestamp_present")]
+            if missing_ts:
+                return "Execution price source has no authoritative timestamp for: " + ", ".join(missing_ts)
+            bad_integrity = [f"{symbol}={row.get('integrity_status', 'UNKNOWN')}" for symbol, row in symbols.items() if row.get("integrity_status") != "OK"]
+            if bad_integrity:
+                return "Price integrity is not OK: " + ", ".join(bad_integrity)
+            return "One or more execution prices are stale"
         if not result.get("price_found"):
             return "No execution price is available"
         if not result.get("source_timestamp_present"):
