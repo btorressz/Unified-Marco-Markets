@@ -22,7 +22,7 @@ probe_router = APIRouter(tags=["health"])
 _state_store = StateStore()
 _start_time = time.time()
 
-_FEED_DEFINITIONS: list[dict[str, Any]] = [{"name":s["provider"],"source_id":s["source_id"],"key":s["snapshot_key"],"is_authoritative":s["authoritative"],"interval_seconds":s["expected_cadence_seconds"]} for s in list_sources()]
+_FEED_DEFINITIONS: list[dict[str, Any]] = [{"name":s["provider"],"source_id":s["source_id"],"key":s["snapshot_key"],"is_authoritative":s["authoritative"],"interval_seconds":s["expected_cadence_seconds"]} for s in list_sources() if s.get("snapshot_key")]
 
 _WARNING_MULTIPLIER = 3
 _ERROR_MULTIPLIER = 10

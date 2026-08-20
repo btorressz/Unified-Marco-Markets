@@ -18,6 +18,7 @@ def test_registry_has_stable_source_contracts():
         "kraken_sol_usd",
         "coingecko_sol_usd",
         "yfinance_crypto_research",
+        "yfinance_crypto_history_research",
         "hyperliquid_sol_usd",
         "drift_sol_perp",
         "drift_funding_sol_perp",
@@ -36,6 +37,10 @@ def test_registry_has_stable_source_contracts():
     assert yahoo["authoritative"] is False
     assert yahoo["research_fallback"] is True
     assert yahoo["execution_eligible"] is False
+    history = SOURCE_REGISTRY["yfinance_crypto_history_research"]
+    assert history["storage_target"] == "research_market_bars"
+    assert history["execution_eligible"] is False
+    assert history["expected_cadence_seconds"] == 3600
     assert SOURCE_REGISTRY["ofac_sanctions"]["observation_contract_version"] == 2
     assert SOURCE_REGISTRY["wto_trade"]["execution_eligible"] is False
 

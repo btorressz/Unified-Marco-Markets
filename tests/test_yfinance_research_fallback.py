@@ -211,3 +211,17 @@ def test_scheduler_registry_and_market_endpoint_wire_research_fallback():
     # neither opts into the Yahoo research tier.
     assert "include_research_fallback=True" not in readiness
     assert "include_research_fallback=True" not in router
+
+
+def test_strict_history_explicit_limit_retains_more_than_365(monkeypatch):
+    import pandas as pd
+    import sys
+    times = pd.date_range("2026-07-01", periods=1000, freq="5min", tz="UTC")
+    frame = pd.DataFrame({"Open": 100.0, "High": 102.0, "Low": 99.0, "Close": 101.0, "Volume": 1}, index=times)
+    class Ticker:
+        def __init__(self, symbol): self.symbol = symbol
+        def history(self, **kwargs): return frame
+    monkeypatch.setitem(sys.modules, "yfinance", type("YF", (), {"Ticker": Ticker}))
+    result = yi.fetch_crypto_history("BTC", period="1mo", interval="5m", limit=1000)
+    assert result["found"] is True
+    assert len(result["history"]) == 1000
