@@ -74,14 +74,16 @@ def get_adaptive_weights():
     try:
         idx = _state_store.get_snapshot("index:latest") or {}
         regime = _state_store.get_snapshot("regime:latest") or {}
-        funding = _state_store.get_snapshot("funding:hyperliquid") or {}
+        from backend.core.state_keys import funding_snapshot_key
+        funding = _state_store.get_snapshot(funding_snapshot_key("hyperliquid", "SOL-PERP")) or {}
 
         shock_score = idx.get("shock_score", 0)
         tariff_index = idx.get("tariff_index", 0)
         vol_regime = regime.get("vol_regime", "normal")
-        funding_skew = funding.get("funding_rate", 0)
+        funding_skew = funding.get("normalized_funding_rate") if funding.get("contract_version") == 1 else None
 
-        result = compute_weights(shock_score, funding_skew, vol_regime, tariff_index)
+        result = compute_weights(shock_score, funding_skew or 0, vol_regime, tariff_index)
+        result["funding_available"] = funding_skew is not None
         return result
     except Exception as exc:
         logger.error("Error computing adaptive weights: %s", exc, exc_info=True)

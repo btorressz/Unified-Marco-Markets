@@ -16,16 +16,14 @@ _store = StateStore()
 def get_carry_scores():
     funding_rates = {}
 
-    hl_fund = _store.get_snapshot("funding:hyperliquid:latest")
-    if hl_fund and "funding_rate" in hl_fund:
-        funding_rates["hyperliquid"] = hl_fund["funding_rate"]
-
-    drift_fund = _store.get_snapshot("funding:drift:latest")
-    if drift_fund and "funding_rate" in drift_fund:
-        funding_rates["drift"] = drift_fund["funding_rate"]
+    from backend.core.state_keys import funding_snapshot_key
+    for venue in ("hyperliquid", "drift"):
+        snap = _store.get_snapshot(funding_snapshot_key(venue, "SOL-PERP"))
+        if snap and snap.get("contract_version") == 1 and snap.get("normalized_funding_rate") is not None:
+            funding_rates[venue] = {"rate": snap["normalized_funding_rate"], "interval_seconds": snap.get("interval_seconds")}
 
     if not funding_rates:
-        funding_rates = {"hyperliquid": 0.0001, "drift": 0.00008}
+        return {"available": False, "reason": "normalized_funding_unavailable", "carry_scores": {}}
 
     scores = _calc.compute_carry_scores(funding_rates)
     return {

@@ -6,7 +6,7 @@ import httpx
 
 from backend.config import PYTH_API_KEY, PYTH_HERMES_URL
 from backend.core.models import PriceTick
-from backend.core.state_keys import price_snapshot_candidates
+from backend.core.state_keys import price_snapshot_candidates, price_snapshot_key
 from backend.core.state_store import StateStore
 from backend.data.repositories.market_repo import MarketRepository
 

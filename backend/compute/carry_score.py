@@ -1,2 +1,5 @@
-def compute_carry_score(funding_rate: float, annualization_factor: int = 365 * 3) -> float:
-    return funding_rate * annualization_factor
+from backend.core.derivatives_observations import annualize_rate
+
+
+def compute_carry_score(funding_rate: float, interval_seconds: int) -> float:
+    return annualize_rate(funding_rate, interval_seconds)

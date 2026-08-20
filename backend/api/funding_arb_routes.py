@@ -1,46 +1,22 @@
-import logging
 from datetime import datetime, timezone
+from fastapi import APIRouter, Query
 
-from fastapi import APIRouter
+from backend.compute.funding_arb import detect_arb
+from backend.data.repositories.derivatives_repo import DerivativesRepository
 
-from backend.core.state_store import StateStore
-from backend.compute.funding_arb import detect_arb, get_history
-
-logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/funding-arb", tags=["funding-arb"])
-
-_store = StateStore()
+_repo = DerivativesRepository()
 
 
 @router.get("/latest")
-def get_latest():
-    try:
-        hl_snap = _store.get_snapshot("funding:hyperliquid") or {}
-        drift_snap = _store.get_snapshot("funding:drift") or {}
-
-        hl_funding = hl_snap.get("funding_rate", 0.0)
-        drift_funding = drift_snap.get("funding_rate", 0.0)
-        now = datetime.now(timezone.utc).isoformat()
-        hl_ts = hl_snap.get("ts", now)
-        drift_ts = drift_snap.get("ts", now)
-
-        result = detect_arb(hl_funding, drift_funding, hl_ts, drift_ts)
-        _store.set_snapshot("funding_arb:latest", result, ttl=60)
-        return result
-    except Exception as exc:
-        logger.error("Error detecting funding arb: %s", exc, exc_info=True)
-        return {
-            "arb_signal": "none",
-            "spread_bps": 0,
-            "persistence_minutes": 0,
-            "expected_net_carry": 0,
-            "ts": datetime.now(timezone.utc).isoformat(),
-        }
+def get_latest(market: str = Query(default="SOL-PERP")):
+    hl = _repo.latest_funding("hyperliquid", market)
+    drift = _repo.latest_funding("drift", market)
+    return detect_arb(hl[0] if hl else None, drift[0] if drift else None)
 
 
 @router.get("/history")
-def get_arb_history():
-    try:
-        return {"history": get_history(), "ts": datetime.now(timezone.utc).isoformat()}
-    except Exception:
-        return {"history": [], "ts": datetime.now(timezone.utc).isoformat()}
+def get_arb_history(market: str = Query(default="SOL-PERP"), limit: int = Query(default=200, ge=1, le=1000)):
+    # Durable source observations, not GET-mutated process state.
+    return {"market": market, "funding_observations": _repo.funding_history(market=market, limit=limit),
+            "read_only": True, "ts": datetime.now(timezone.utc).isoformat()}

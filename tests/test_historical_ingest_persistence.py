@@ -82,7 +82,8 @@ def test_drift_store_persists_market_and_funding_history():
     ingestor._store_funding(funding_tick)
 
     assert store.snapshots[0][0] == "price:drift:SOL-PERP"
-    assert store.snapshots[1][0] == "funding:drift:SOL-PERP"
+    assert store.snapshots[1][0] == "funding:drift:SOL_PERP"
+    assert store.snapshots[2][0] == "funding:drift:SOL-PERP"
     assert repo.market_ticks[0]["symbol"] == "SOL-PERP"
     assert repo.market_ticks[0]["ts"] == price_tick.ts
     assert repo.funding_ticks[0]["venue"] == "drift"

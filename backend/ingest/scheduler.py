@@ -60,6 +60,7 @@ class IngestScheduler:
         self.scheduler.add_job(self._run_coingecko, "interval", seconds=60, id="coingecko_ingest", name="CoinGecko Price Ingest", replace_existing=True)
         self.scheduler.add_job(self._run_pyth, "interval", seconds=30, id="pyth_ingest", name="Pyth Price Ingest", replace_existing=True)
         self.scheduler.add_job(self._run_hyperliquid_market, "interval", seconds=60, id="hyperliquid_market_ingest", name="Hyperliquid Perp Context", replace_existing=True)
+        self.scheduler.add_job(self._run_hyperliquid_funding_history, "interval", hours=1, id="hyperliquid_funding_history_ingest", name="Hyperliquid Funding History", replace_existing=True)
         self.scheduler.add_job(self._run_drift, "interval", seconds=60, id="drift_ingest", name="Drift Market Ingest", replace_existing=True)
         self.scheduler.add_job(self._run_yfinance_crypto, "interval", seconds=60, id="yfinance_crypto_ingest", name="Yahoo Finance Crypto Research Fallback", replace_existing=True)
         self.scheduler.add_job(self._run_yfinance_crypto_history, "interval", hours=1, id="yfinance_crypto_history_ingest", name="Yahoo Finance Crypto Research History", replace_existing=True)
@@ -189,6 +190,12 @@ class IngestScheduler:
             await self._run_source("hyperliquid_sol_usd", "hyperliquid-market", lambda context: self.hyperliquid_market.fetch_market_context(run_context=context))
         except Exception:
             logger.error("Hyperliquid market ingest job failed", exc_info=True)
+
+    async def _run_hyperliquid_funding_history(self) -> None:
+        try:
+            await self._run_source("hyperliquid_funding_history_research", "hyperliquid-funding-history", lambda context: self.hyperliquid_market.fetch_funding_history(run_context=context))
+        except Exception:
+            logger.error("Hyperliquid funding history ingest job failed", exc_info=True)
 
     async def _run_drift(self) -> None:
         try:

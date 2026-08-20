@@ -5,6 +5,7 @@ import httpx
 
 from backend.core.models import PriceTick, FundingTick
 from backend.core.state_store import StateStore
+from backend.core.state_keys import funding_snapshot_key
 from backend.data.repositories.market_repo import MarketRepository
 
 logger = logging.getLogger(__name__)
@@ -75,8 +76,16 @@ class DriftIngestor:
                     logger.warning("Drift: no funding rates for %s", market)
                     return None
 
-                latest = rates[0] if rates else {}
-                funding_rate = float(latest.get("fundingRate", latest.get("rate", 0)))
+                # The legacy endpoint does not publish a stable unit/sign contract.
+                # Sort by the provider timestamp rather than assuming response order,
+                # and retain this only as a contract-v0 raw observation.
+                def provider_time(row):
+                    return int(row.get("ts", row.get("timestamp", row.get("fundingRateTs", -1))))
+                latest = max(rates, key=provider_time)
+                raw = latest.get("fundingRate", latest.get("rate"))
+                if raw is None:
+                    raise ValueError("funding rate missing")
+                funding_rate = float(raw)
 
                 tick = FundingTick(
                     venue="drift",
@@ -110,8 +119,17 @@ class DriftIngestor:
 
     def _store_funding(self, tick: FundingTick, run_context=None) -> None:
         self.state_store.set_snapshot(
+            funding_snapshot_key(tick.venue, tick.market),
+            {**tick.model_dump(mode="json"), "available": False,
+             "reason": "drift_units_sign_and_interval_unverified", "contract_version": 0,
+             "research_only": True, "execution_eligible": False},
+            ttl=300,
+        )
+        # Transitional alias for pre-v1 SOL consumers; canonical underscore key is primary.
+        self.state_store.set_snapshot(
             f"funding:{tick.venue}:{tick.market}",
-            tick.model_dump(mode="json"),
+            {**tick.model_dump(mode="json"), "available": False,
+             "reason": "drift_units_sign_and_interval_unverified", "contract_version": 0},
             ttl=300,
         )
         row = self.market_repo.save_funding_tick(

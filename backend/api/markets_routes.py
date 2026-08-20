@@ -5,11 +5,12 @@ from fastapi import APIRouter, HTTPException, Query
 
 from backend.core.schemas import MarketDataResponse
 from backend.core.timeutils import window_to_seconds
-from backend.core.state_keys import PRICE_INTEGRITY, PRICE_INTEGRITY_LEGACY_LATEST, price_integrity_key
+from backend.core.state_keys import PRICE_INTEGRITY, PRICE_INTEGRITY_LEGACY_LATEST, price_integrity_key, price_snapshot_candidates
 from backend.core.state_store import StateStore
 from backend.core.price_authority import PriceAuthority
 from backend.core.price_validator import PriceValidator
 from backend.data.repositories.market_repo import MarketRepository
+from backend.data.repositories.derivatives_repo import DerivativesRepository
 from backend.data.repositories.research_market_history_repo import (
     INTERVAL_SECONDS, MAX_HISTORY_LIMIT, SOURCE_ID, SUPPORTED_SYMBOLS, ResearchMarketHistoryRepository,
 )
@@ -23,6 +24,7 @@ _store = StateStore()
 _validator = PriceValidator(state_store=_store)
 _price_authority = PriceAuthority(state_store=_store)
 _research_history = ResearchMarketHistoryRepository()
+_derivatives = DerivativesRepository()
 
 
 @router.get("/latest", response_model=list[MarketDataResponse])
@@ -48,6 +50,7 @@ def get_latest():
 def get_research_price(symbol: str = Query(default="SOL/USD")):
     """Return the normal price chain plus explicit Yahoo research fallback."""
     result = _price_authority.get_price(symbol, include_research_fallback=True)
+    venue = result.source
     return {
         **result.to_dict(),
         "symbol": symbol.upper(),
@@ -55,6 +58,7 @@ def get_research_price(symbol: str = Query(default="SOL/USD")):
         "research_grade": result.source == "yfinance",
         "execution_eligible": result.source != "yfinance",
         "degraded": result.source == "yfinance" or not result.found,
+        "snapshot_candidates": price_snapshot_candidates(venue, symbol),
     }
 
 
@@ -93,13 +97,26 @@ def get_research_history(symbol: str, start_ts: datetime, end_ts: datetime,
 
 
 @router.get("/funding")
-def get_funding():
+def get_funding(venue: str | None = None, market: str | None = None):
     try:
-        rows = _market_repo.get_latest_funding()
-        return {"funding_rates": rows, "count": len(rows)}
+        rows = _derivatives.funding_history(venue=venue, market=market, limit=50)
+        return {"funding_rates": rows, "count": len(rows), "contract_version": 1, "read_only": True}
     except Exception as exc:
         logger.error("Error fetching funding rates: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch funding rates")
+
+
+@router.get("/funding/history")
+def get_funding_history(venue: str | None = None, market: str | None = None,
+                        start_ts: datetime | None = None, end_ts: datetime | None = None,
+                        limit: int = Query(default=200, ge=1, le=1000)):
+    rows = _derivatives.funding_history(venue, market, start_ts, end_ts, limit)
+    return {"observations": rows, "count": len(rows), "read_only": True}
+
+
+@router.get("/funding/coverage")
+def get_funding_coverage(venue: str | None = None, market: str | None = None):
+    return {"coverage": _derivatives.funding_coverage(venue, market), "read_only": True}
 
 
 @router.get("/integrity")
