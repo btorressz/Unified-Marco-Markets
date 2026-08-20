@@ -59,12 +59,12 @@ def _build_state_from_redis() -> dict[str, Any]:
         state["predictor_prob"] = pred.get("probability", pred.get("probability_up", 0.5))
 
     arb = _store.get_snapshot("funding_arb:latest")
-    if arb:
-        state["funding_arb_score"] = abs(arb.get("spread_pct", 0.0))
+    if arb and arb.get("available") is True and arb.get("spread_bps") is not None:
+        state["funding_arb_score"] = abs(arb["spread_bps"]) / 100.0
 
     basis = _store.get_snapshot("basis:latest")
-    if basis:
-        state["basis_opportunity"] = basis.get("feasibility_score", 0.0)
+    if basis and basis.get("available") is True and basis.get("feasibility_score") is not None:
+        state["basis_opportunity"] = basis["feasibility_score"]
 
     stable = _store.get_snapshot(STABLECOIN_HEALTH) or _store.get_snapshot(STABLECOIN_HEALTH_LEGACY)
     assets = _stable_assets(stable)

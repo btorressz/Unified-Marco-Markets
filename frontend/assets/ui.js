@@ -421,7 +421,7 @@ const UI = (() => {
             <div class="metric-box" style="flex:1"><div class="metric-label">HL-Spot Basis</div><div class="metric-value" style="font-size:14px">${formatNumber(b.hl_spot_basis_bps, 2)} bps</div></div>
             <div class="metric-box" style="flex:1"><div class="metric-label">Drift-Spot Basis</div><div class="metric-value" style="font-size:14px">${formatNumber(b.drift_spot_basis_bps, 2)} bps</div></div>
             <div class="metric-box" style="flex:1"><div class="metric-label">HL-Drift Spread</div><div class="metric-value" style="font-size:14px">${formatNumber(b.hl_drift_spread_bps, 2)} bps</div></div>
-            <div class="metric-box" style="flex:1"><div class="metric-label">Ann. Basis</div><div class="metric-value" style="font-size:14px">${formatNumber(b.annualized_basis_bps, 2)} bps</div></div>
+            <div class="metric-box" style="flex:1"><div class="metric-label">Perp Basis</div><div class="metric-value" style="font-size:14px">${b.hl_spot_basis_bps == null ? '--' : `${formatNumber(b.hl_spot_basis_bps, 2)} bps`}</div></div>
             <div class="metric-box" style="flex:1"><div class="metric-label">Net Carry</div><div class="metric-value" style="font-size:14px">${formatNumber(b.net_carry, 4)}</div></div>
           </div>
         `;

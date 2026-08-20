@@ -78,6 +78,47 @@ CREATE TABLE IF NOT EXISTS funding_ticks (
     ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE funding_ticks ADD COLUMN IF NOT EXISTS contract_version SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE funding_ticks ADD COLUMN IF NOT EXISTS source_id VARCHAR(100);
+ALTER TABLE funding_ticks ADD COLUMN IF NOT EXISTS rate_kind VARCHAR(30);
+ALTER TABLE funding_ticks ADD COLUMN IF NOT EXISTS raw_funding_rate DOUBLE PRECISION;
+ALTER TABLE funding_ticks ADD COLUMN IF NOT EXISTS normalized_funding_rate DOUBLE PRECISION;
+ALTER TABLE funding_ticks ADD COLUMN IF NOT EXISTS interval_seconds INTEGER;
+ALTER TABLE funding_ticks ADD COLUMN IF NOT EXISTS long_cashflow_rate DOUBLE PRECISION;
+ALTER TABLE funding_ticks ADD COLUMN IF NOT EXISTS short_cashflow_rate DOUBLE PRECISION;
+ALTER TABLE funding_ticks ADD COLUMN IF NOT EXISTS annualized_rate DOUBLE PRECISION;
+ALTER TABLE funding_ticks ADD COLUMN IF NOT EXISTS provider_timestamp TIMESTAMPTZ;
+ALTER TABLE funding_ticks ADD COLUMN IF NOT EXISTS retrieved_at TIMESTAMPTZ;
+ALTER TABLE funding_ticks ADD COLUMN IF NOT EXISTS timestamp_semantics VARCHAR(100);
+ALTER TABLE funding_ticks ADD COLUMN IF NOT EXISTS sign_convention VARCHAR(150);
+ALTER TABLE funding_ticks ADD COLUMN IF NOT EXISTS research_only BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE funding_ticks ADD COLUMN IF NOT EXISTS execution_eligible BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE funding_ticks ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}';
+-- v1 asymmetric observations may have no honest scalar; legacy rows remain intact.
+ALTER TABLE funding_ticks ALTER COLUMN funding_rate DROP NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_funding_ticks_venue_market_ts ON funding_ticks(venue,market,ts DESC);
+CREATE INDEX IF NOT EXISTS idx_funding_ticks_provider_ts ON funding_ticks(venue,market,provider_timestamp DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_funding_provider_observation
+    ON funding_ticks(venue,market,source_id,rate_kind,provider_timestamp)
+    WHERE provider_timestamp IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS basis_observations (
+    id BIGSERIAL PRIMARY KEY, contract_version SMALLINT NOT NULL DEFAULT 1,
+    symbol VARCHAR(30) NOT NULL, venue VARCHAR(50) NOT NULL, market VARCHAR(50) NOT NULL,
+    spot_source VARCHAR(100) NOT NULL, spot_price DOUBLE PRECISION NOT NULL,
+    perp_price DOUBLE PRECISION NOT NULL, basis_bps DOUBLE PRECISION NOT NULL,
+    spot_ts TIMESTAMPTZ NOT NULL, perp_ts TIMESTAMPTZ NOT NULL,
+    observed_at TIMESTAMPTZ NOT NULL, retrieved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    timestamp_skew_seconds DOUBLE PRECISION NOT NULL, aligned BOOLEAN NOT NULL,
+    fresh BOOLEAN NOT NULL, research_only BOOLEAN NOT NULL DEFAULT TRUE,
+    execution_eligible BOOLEAN NOT NULL DEFAULT FALSE,
+    lineage JSONB NOT NULL DEFAULT '{}', metadata JSONB NOT NULL DEFAULT '{}',
+    UNIQUE(venue,market,spot_source,spot_ts,perp_ts)
+);
+CREATE INDEX IF NOT EXISTS idx_basis_venue_market_observed ON basis_observations(venue,market,observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_basis_symbol_observed ON basis_observations(symbol,observed_at DESC);
+
 CREATE TABLE IF NOT EXISTS positions (
     id SERIAL PRIMARY KEY,
     venue VARCHAR(50) NOT NULL,

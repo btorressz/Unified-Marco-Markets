@@ -64,6 +64,27 @@ def price_integrity_key(symbol: str) -> str:
     return f"price:integrity:{normalize_price_symbol(symbol)}"
 
 
+def normalize_perp_market(market: str) -> str:
+    value = str(market or "").upper().strip().replace("/", "_").replace("-", "_")
+    if value not in {"BTC_PERP", "ETH_PERP", "SOL_PERP"}:
+        raise ValueError(f"unsupported perpetual market: {market}")
+    return value
+
+
+def funding_snapshot_key(venue: str, market: str) -> str:
+    return f"funding:{str(venue).lower().strip()}:{normalize_perp_market(market)}"
+
+
+def perp_market_context_key(venue: str, market: str) -> str:
+    return f"market:{str(venue).lower().strip()}:{normalize_perp_market(market)}"
+
+
+def funding_snapshot_candidates(venue: str, market: str) -> tuple[str, ...]:
+    canonical = funding_snapshot_key(venue, market)
+    legacy = f"funding:{str(venue).lower().strip()}:{str(market).upper()}"
+    return (canonical, legacy) if legacy != canonical else (canonical,)
+
+
 PRICE_INTEGRITY = "price:integrity"  # legacy SOL/USD alias
 PRICE_INTEGRITY_LEGACY_LATEST = "price:integrity:latest"
 

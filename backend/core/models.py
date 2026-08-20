@@ -18,6 +18,7 @@ class FundingTick(BaseModel):
     market: str
     funding_rate: float
     ts: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    contract_version: int = 0
 
 
 class OrderbookSnap(BaseModel):

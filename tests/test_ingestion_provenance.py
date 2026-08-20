@@ -20,6 +20,7 @@ def test_registry_has_stable_source_contracts():
         "yfinance_crypto_research",
         "yfinance_crypto_history_research",
         "hyperliquid_sol_usd",
+        "hyperliquid_funding_history_research",
         "drift_sol_perp",
         "drift_funding_sol_perp",
         "wits_tariffs",
@@ -59,7 +60,7 @@ def test_hyperliquid_feed_health_compatibility_is_preserved():
     source = SOURCE_REGISTRY["hyperliquid_sol_usd"]
     assert source["provider"] == "Hyperliquid"
     assert source["snapshot_key"] == "market:hyperliquid:SOL_PERP"
-    assert source["storage_target"] == "market_ticks+redis_snapshot"
+    assert source["storage_target"] == "market_ticks+funding_ticks+redis_snapshot"
     health = _source("backend/api/health_routes.py")
     assert "for s in list_sources()" in health
 

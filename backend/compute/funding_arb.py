@@ -1,107 +1,77 @@
-import time
-import logging
-from collections import deque
+"""Pure comparison of normalized funding observations."""
+from datetime import datetime, timezone
 
-logger = logging.getLogger(__name__)
-
-MAX_HISTORY = 100
-PERSISTENCE_THRESHOLD_MINUTES = 5.0
+MAX_TIMESTAMP_SKEW_SECONDS = 300
+MAX_AGE_SECONDS = 300
 SPREAD_THRESHOLD_BPS = 5.0
 
 
+def _timestamp(value):
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return None
+
+
+def _unavailable(reasons, market=None):
+    return {"available": False, "reasons": reasons, "arb_signal": None,
+            "spread_bps": None, "persistence_minutes": None,
+            "expected_net_carry": None, "direction": None, "confidence": None,
+            "metadata": {"market": market, "research_only": True, "no_auto_trade": True}}
+
+
 class FundingArbDetector:
+    def detect_arb(self, hyperliquid: dict | None, drift: dict | None,
+                   history: list[dict] | None = None, now: datetime | None = None) -> dict:
+        now = now or datetime.now(timezone.utc)
+        reasons = []
+        for name, obs in (("hyperliquid", hyperliquid), ("drift", drift)):
+            if not obs:
+                reasons.append(f"missing_{name}_observation")
+            elif obs.get("contract_version") != 1:
+                reasons.append(f"{name}_not_normalized_v1")
+            elif obs.get("normalized_funding_rate") is None:
+                reasons.append(f"{name}_normalization_unavailable")
+            elif obs.get("long_cashflow_rate") is None or obs.get("short_cashflow_rate") is None:
+                reasons.append(f"{name}_side_cashflows_unavailable")
+        market = (hyperliquid or {}).get("market") or (drift or {}).get("market")
+        if reasons:
+            return _unavailable(reasons, market)
+        if hyperliquid["market"] != drift["market"]:
+            return _unavailable(["market_mismatch"], market)
+        hl_ts = _timestamp(hyperliquid.get("provider_timestamp") or hyperliquid.get("retrieved_at"))
+        drift_ts = _timestamp(drift.get("provider_timestamp") or drift.get("retrieved_at"))
+        if not hl_ts or not drift_ts:
+            return _unavailable(["invalid_timestamp"], market)
+        skew = abs((hl_ts - drift_ts).total_seconds())
+        ages = ((now - hl_ts).total_seconds(), (now - drift_ts).total_seconds())
+        if skew > MAX_TIMESTAMP_SKEW_SECONDS:
+            reasons.append("timestamp_skew_exceeded")
+        if max(ages) > MAX_AGE_SECONDS:
+            reasons.append("stale_observation")
+        if reasons:
+            return _unavailable(reasons, market)
 
-    def __init__(self):
-        self._history: deque = deque(maxlen=MAX_HISTORY)
-
-    def detect_arb(self, hl_funding: float, drift_funding: float,
-                   hl_ts: float | None = None, drift_ts: float | None = None) -> dict:
-        now = time.time()
-        hl_ts = hl_ts or now
-        drift_ts = drift_ts or now
-
-        spread_bps = (hl_funding - drift_funding) * 10000.0
-
-        entry = {
-            "hl_funding": hl_funding,
-            "drift_funding": drift_funding,
-            "spread_bps": spread_bps,
-            "hl_ts": hl_ts,
-            "drift_ts": drift_ts,
-            "recorded_at": now,
-        }
-        self._history.append(entry)
-
-        if abs(spread_bps) < SPREAD_THRESHOLD_BPS:
-            return {
-                "arb_signal": "none",
-                "spread_bps": round(spread_bps, 2),
-                "persistence_minutes": 0.0,
-                "expected_net_carry": 0.0,
-                "direction": None,
-                "confidence": 0.0,
-                "history_len": len(self._history),
-            }
-
-        if spread_bps > 0:
+        hl_rate = float(hyperliquid["normalized_funding_rate"])
+        drift_rate = float(drift["normalized_funding_rate"])
+        spread_bps = (hl_rate - drift_rate) * 10_000
+        if spread_bps >= 0:
             direction = "short_hl_long_drift"
+            carry = float(hyperliquid["short_cashflow_rate"]) * 31557600 / hyperliquid["interval_seconds"] + float(drift["long_cashflow_rate"]) * 31557600 / drift["interval_seconds"]
         else:
             direction = "long_hl_short_drift"
-
-        persistence_minutes = self._compute_persistence(direction)
-
-        expected_net_carry = self._compute_carry(spread_bps)
-
-        historical_mean = self._historical_mean_spread()
-
-        confidence = min(0.95, 0.5 + (persistence_minutes / 60.0) * 0.3 + (abs(spread_bps) / 50.0) * 0.2)
-
-        return {
-            "arb_signal": direction,
-            "spread_bps": round(spread_bps, 2),
-            "persistence_minutes": round(persistence_minutes, 2),
-            "expected_net_carry": round(expected_net_carry, 4),
-            "direction": direction,
-            "confidence": round(confidence, 4),
-            "historical_mean_spread_bps": round(historical_mean, 2),
-            "history_len": len(self._history),
-        }
-
-    def _compute_persistence(self, current_direction: str) -> float:
-        if len(self._history) < 2:
-            return 0.0
-
-        earliest_consistent = self._history[-1]["recorded_at"]
-        for entry in reversed(self._history):
-            if current_direction == "short_hl_long_drift" and entry["spread_bps"] > 0:
-                earliest_consistent = entry["recorded_at"]
-            elif current_direction == "long_hl_short_drift" and entry["spread_bps"] < 0:
-                earliest_consistent = entry["recorded_at"]
-            else:
-                break
-
-        return (self._history[-1]["recorded_at"] - earliest_consistent) / 60.0
-
-    def _compute_carry(self, spread_bps: float) -> float:
-        annualized = abs(spread_bps) * 3 * 365 / 10000.0
-        return annualized
-
-    def _historical_mean_spread(self) -> float:
-        if not self._history:
-            return 0.0
-        return sum(e["spread_bps"] for e in self._history) / len(self._history)
-
-    def get_history(self) -> list[dict]:
-        return list(self._history)
+            carry = float(hyperliquid["long_cashflow_rate"]) * 31557600 / hyperliquid["interval_seconds"] + float(drift["short_cashflow_rate"]) * 31557600 / drift["interval_seconds"]
+        signal = direction if abs(spread_bps) >= SPREAD_THRESHOLD_BPS else "none"
+        return {"available": True, "arb_signal": signal, "spread_bps": round(spread_bps, 2),
+                "persistence_minutes": None, "expected_net_carry": carry,
+                "direction": direction if signal != "none" else None, "confidence": None,
+                "metadata": {"venues": ["hyperliquid", "drift"], "market": market,
+                    "intervals": [hyperliquid["interval_seconds"], drift["interval_seconds"]],
+                    "timestamp_skew_seconds": skew,
+                    "source_ids": [hyperliquid["source_id"], drift["source_id"]],
+                    "contract_versions": [1, 1], "research_only": True, "no_auto_trade": True}}
 
 
-_detector = FundingArbDetector()
-
-
-def detect_arb(hl_funding: float, drift_funding: float,
-               hl_ts: float | None = None, drift_ts: float | None = None) -> dict:
-    return _detector.detect_arb(hl_funding, drift_funding, hl_ts, drift_ts)
-
-
-def get_history() -> list[dict]:
-    return _detector.get_history()
+def detect_arb(hyperliquid, drift, history=None, now=None):
+    return FundingArbDetector().detect_arb(hyperliquid, drift, history, now)
