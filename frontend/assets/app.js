@@ -382,7 +382,7 @@ const App = (() => {
   }
 
   async function refreshMarkets() {
-    const [latest, funding, carry, microstructure, integrity, solanaQuality, fundingArb, basis, feedStatus] = await Promise.allSettled([
+    const [latest, funding, carry, microstructure, integrity, solanaQuality, fundingArb, basis, feedStatus, researchHistoryCoverage] = await Promise.allSettled([
       API.getMarketLatest(),
       API.getFunding(),
       API.getCarry(),
@@ -392,6 +392,7 @@ const App = (() => {
       API.getFundingArb(),
       API.getBasisLatest(),
       API.getFeedStatus(),
+      API.getResearchHistoryCoverage(),
     ]);
     UI.renderMarketsTab({
       latest: latest.status === 'fulfilled' ? latest.value : null,
@@ -402,6 +403,7 @@ const App = (() => {
       solanaQuality: solanaQuality.status === 'fulfilled' ? solanaQuality.value : null,
       fundingArb: fundingArb.status === 'fulfilled' ? fundingArb.value : null,
       basis: basis.status === 'fulfilled' ? basis.value : null,
+      researchHistoryCoverage: researchHistoryCoverage.status === 'fulfilled' ? researchHistoryCoverage.value : null,
     });
     if (feedStatus.status === 'fulfilled') {
       UI.renderFeedStatus(feedStatus.value);

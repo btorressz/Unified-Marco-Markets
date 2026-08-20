@@ -293,6 +293,7 @@ const UI = (() => {
   }
 
   function renderMarketsTab(data) {
+    renderCryptoResearchHistoryCoverage(data.researchHistoryCoverage);
     if (data.latest) {
       const tbody = document.getElementById('markets-tbody');
       if (tbody) {
@@ -426,6 +427,44 @@ const UI = (() => {
         `;
       }
     }
+  }
+
+  function renderCryptoResearchHistoryCoverage(payload) {
+    const panel = document.getElementById('crypto-research-history-panel');
+    if (!panel) return;
+    const coverage = payload && Array.isArray(payload.coverage) ? payload.coverage : null;
+    if (!coverage || coverage.length === 0) {
+      panel.innerHTML = '<div class="empty-state"><div class="empty-state-text">Research history coverage unavailable</div></div>';
+      return;
+    }
+    const bySymbol = new Map(coverage.map(row => [row.symbol, row]));
+    const timestampText = value => {
+      if (!value) return '--';
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? escapeHtml(value) : escapeHtml(date.toLocaleString());
+    };
+    const rows = ['BTC/USD', 'ETH/USD', 'SOL/USD'].map(symbol => {
+      const row = bySymbol.get(symbol);
+      if (!row) return `<article class="research-history-row"><div class="research-history-heading"><strong>${symbol}</strong><span class="quality-badge unavailable">UNAVAILABLE</span></div><div class="quality-meta">No coverage measurement returned.</div></article>`;
+      const observed = Number(row.observed_observation_count);
+      const ratio = row.coverage_ratio === null || row.coverage_ratio === undefined ? null : Number(row.coverage_ratio);
+      let status = 'UNAVAILABLE';
+      let statusClass = 'unavailable';
+      if (Number.isFinite(observed) && observed > 0 && Number.isFinite(ratio)) {
+        if (ratio >= 0.99) { status = 'GOOD COVERAGE'; statusClass = 'observed'; }
+        else if (ratio >= 0.95) { status = 'PARTIAL'; statusClass = 'research'; }
+        else { status = 'DEGRADED'; statusClass = 'stale'; }
+      }
+      const interval = Number(row.interval_seconds);
+      const stale = observed > 0 && Number.isFinite(Number(row.age_seconds)) && Number.isFinite(interval) && Number(row.age_seconds) > interval * 2;
+      const percentage = Number.isFinite(ratio) ? `${(ratio * 100).toFixed(2)}%` : '--';
+      return `<article class="research-history-row">
+        <div class="research-history-heading"><strong>${escapeHtml(row.symbol || symbol)}</strong><div class="quality-strip"><span class="quality-badge ${statusClass}">${status}</span>${stale ? '<span class="quality-badge stale">STALE</span>' : ''}<span class="quality-badge observed">OBSERVED HISTORY</span><span class="quality-badge research">DURABLE</span><span class="quality-badge research">RESEARCH ONLY</span><span class="quality-badge research">NOT EXECUTION ELIGIBLE</span></div></div>
+        <div class="research-history-metrics"><span><b>Interval</b>${ageText(row.interval_seconds)}</span><span><b>Coverage</b>${percentage}</span><span><b>Observed</b>${Number.isFinite(observed) ? observed.toLocaleString() : '--'}</span><span><b>Expected</b>${Number.isFinite(Number(row.expected_observation_count)) ? Number(row.expected_observation_count).toLocaleString() : '--'}</span><span><b>Max gap</b>${ageText(row.max_gap_seconds)}</span><span><b>Latest age</b>${ageText(row.age_seconds)}</span></div>
+        <div class="research-history-meta"><span><b>First observation:</b> ${timestampText(row.first_observation_ts)}</span><span><b>Last observation:</b> ${timestampText(row.last_observation_ts)}</span><span><b>Provider:</b> ${escapeHtml(row.provider || '--')}</span><span><b>Source:</b> ${escapeHtml(row.source_id || '--')}</span></div>
+      </article>`;
+    }).join('');
+    panel.innerHTML = `<div class="research-history-boundary"><strong>DURABLE RESEARCH HISTORY COVERAGE</strong><span>Historical completeness and freshness are separate from live feed health and execution readiness.</span></div><div class="research-history-list">${rows}</div>`;
   }
 
   function renderDivergenceTab(data) {
@@ -1546,6 +1585,24 @@ const UI = (() => {
     return `<span class="quality-badge ${event.authoritative_evidence ? 'observed' : 'proxy'}">${evidence}</span><span class="quality-badge ${event.authoritative_evidence ? 'observed' : 'proxy'}">${event.authoritative_evidence ? 'AUTHORITATIVE' : 'NON-AUTHORITATIVE'}</span><span class="quality-badge proxy">RESEARCH ONLY</span>`;
   }
 
+  function renderReactionHistoryProvenance(study) {
+    const metadata = study && study.observation_model && study.observation_model.history_metadata;
+    const providerStatus = (study || {}).provider_status || {};
+    if (!metadata || typeof metadata !== 'object') {
+      return '<section class="reaction-history"><h3>MARKET HISTORY USED</h3><div class="empty-state-text">Market history provenance unavailable</div></section>';
+    }
+    const labels = { durable_research_market_bars: 'DURABLE LOCAL', yahoo_on_demand: 'YAHOO ON-DEMAND' };
+    const rows = ['BTC', 'ETH', 'SOL'].map(asset => {
+      const history = metadata[asset];
+      const status = providerStatus[asset] || {};
+      if (!history) return `<div class="reaction-history-row"><strong>${asset}/USD</strong><span class="quality-badge unavailable">UNAVAILABLE</span></div>`;
+      const available = status.found !== false;
+      const source = labels[history.history_source] || history.history_source || '--';
+      return `<div class="reaction-history-row"><div><strong>${asset}/USD</strong><span>${escapeHtml(history.provider || status.provider || '--')}</span><small>Source: ${escapeHtml(history.source_id || status.source_id || '--')}</small></div><div class="quality-strip"><span class="quality-badge ${available ? 'observed' : 'unavailable'}">${available ? escapeHtml(source) : 'UNAVAILABLE'}</span><span class="quality-badge ${history.persisted === true ? 'observed' : 'research'}">${history.persisted === true ? 'PERSISTED' : 'NOT PERSISTED'}</span><span class="quality-badge research">RESEARCH ONLY</span></div></div>`;
+    }).join('');
+    return `<section class="reaction-history"><h3>MARKET HISTORY USED</h3>${rows}</section>`;
+  }
+
   function renderGeopoliticalReactionLab(catalog, study) {
     const panel = document.getElementById('geo-reaction-lab-panel'); if (!panel) return;
     const events = (catalog || {}).events || [];
@@ -1562,7 +1619,7 @@ const UI = (() => {
       return `<tr><td><strong>${escapeHtml(bucket.label || bucket.bucket)}</strong><small>${escapeHtml((bucket.symbols || []).join(', '))}</small></td><td aria-label="Expected ${escapeHtml(bucket.expected_direction)}">${expectedVisual[bucket.expected_direction] || '? UNKNOWN'}</td>${cells}</tr>`;
     }).join('');
     const metadata = selected ? `<div class="reaction-metadata"><span><b>Source:</b> ${escapeHtml(selected.source || '--')}</span><span><b>Authority:</b> ${selected.authoritative_evidence ? 'Authoritative' : 'Non-authoritative'}</span><span><b>Claim type:</b> ${escapeHtml(selected.claim_type || '--')}</span><span><b>Event timestamp:</b> ${formatTimestamp(selected.event_timestamp)}</span><span><b>Time basis:</b> ${escapeHtml(selected.event_time_basis || '--')}</span><span><b>Record/change ID:</b> ${escapeHtml(selected.source_record_id || selected.change_type || '--')}</span>${(selected.programs || []).length ? `<span><b>Programs:</b> ${escapeHtml(selected.programs.join(', '))}</span>` : ''}</div><div class="quality-strip">${reactionAuthorityBadges(selected)}</div>` : '';
-    panel.innerHTML = `<div class="card-header"><span class="card-title">Geopolitical Event → Market Reaction Lab</span></div><div class="reaction-warning"><strong>EVENT STUDY — NOT CAUSAL ATTRIBUTION</strong><br>Observed returns measure market movement after the recorded event time. They do not establish that the event caused the movement. Expected directions are deterministic research mappings, not predictions or trading signals.</div><label class="metric-label" for="geo-reaction-event-selector">Research event</label><select id="geo-reaction-event-selector" class="reaction-selector">${options}</select>${metadata}${study ? `<div class="table-scroll"><table class="reaction-matrix"><thead><tr><th>Asset bucket</th><th>Expected</th><th>1h</th><th>4h</th><th>24h</th><th>7d</th></tr></thead><tbody>${matrix}</tbody></table></div>` : '<div class="empty-state-text">Observed history is UNAVAILABLE for this event, or no eligible event is available.</div>'}`;
+    panel.innerHTML = `<div class="card-header"><span class="card-title">Geopolitical Event → Market Reaction Lab</span></div><div class="reaction-warning"><strong>EVENT STUDY — NOT CAUSAL ATTRIBUTION</strong><br>Observed returns measure market movement after the recorded event time. They do not establish that the event caused the movement. Expected directions are deterministic research mappings, not predictions or trading signals.</div><label class="metric-label" for="geo-reaction-event-selector">Research event</label><select id="geo-reaction-event-selector" class="reaction-selector">${options}</select>${metadata}${renderReactionHistoryProvenance(study)}${study ? `<div class="table-scroll"><table class="reaction-matrix"><thead><tr><th>Asset bucket</th><th>Expected</th><th>1h</th><th>4h</th><th>24h</th><th>7d</th></tr></thead><tbody>${matrix}</tbody></table></div>` : '<div class="empty-state-text">Observed history is UNAVAILABLE for this event, or no eligible event is available.</div>'}`;
     const selector = document.getElementById('geo-reaction-event-selector');
     if (selector) selector.addEventListener('change', async () => {
       panel.classList.add('loading');
