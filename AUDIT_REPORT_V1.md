@@ -17,7 +17,7 @@ The project nevertheless remains 🟡 **partially aligned** with its core goal. 
 **Overall product-goal alignment: 67/100.** Architecture aligns; durable evidence and crypto-market history do not yet support the breadth of claims and questions the product wants to study.
 
 ## 2. Audit Scope & Method
-
+ 
 The current inventory contains **189 backend Python files, 46 route modules, 41 test files, and 10 frontend JavaScript files**. The browser is still vanilla HTML/JS; `frontend/assets/ui.js` is 1,791 lines, `frontend/assets/app.js` 769 lines, and `backend/api/execution_routes.py` 784 lines. The monolith remains understandable because providers, repositories, pure compute, execution, and routes are visibly separated, although orchestration concentration is rising.
 
 Validation included source searches, direct reading of the principal changed modules, SQL migrations, source registry, and tests. The full suite stopped during collection with **20 collection errors** because the active Python 3.14 environment lacked installed packages (`httpx`, `fastapi`, `pandas`, `psycopg2`, `pydantic`, and `redis`). Those packages are declared in `pyproject.toml`, so this is primarily an unprovisioned environment, while the absence of a lockfile/explicit dev workflow remains a reproducibility limitation. No test pass is claimed.
