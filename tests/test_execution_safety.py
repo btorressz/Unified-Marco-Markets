@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from backend.compute.execution_decision import evaluate_data_guardrails
 from backend.compute.risk_engine import RiskEngine
 from backend.execution.hyperliquid_exec import _asset_index
 from backend.execution.drift_exec import _market_index
@@ -53,7 +54,46 @@ def _configure_live_router(router: ExecutionRouter) -> None:
         "integrity_status": "OK",
         **(order_context or {}),
     }
-    router._get_market_state = lambda: {"price_integrity": "OK"}
+    router._get_market_state = lambda market=None: {"price_integrity": "OK"}
+
+
+def test_live_data_guardrail_blocks_unknown_integrity():
+    result = evaluate_data_guardrails(
+        {
+            "execution_mode": "live",
+            "live_execution_enabled": True,
+            "validation_reasons": [],
+            "price_found": True,
+            "fill_price": 100.0,
+            "order_notional": 100.0,
+            "max_order_notional": 1000.0,
+            "price_fresh": True,
+            "integrity_status": "UNKNOWN",
+            "price_integrity_block_live": True,
+        }
+    )
+
+    assert result["allowed"] is False
+    assert result["stage"] == "price_integrity"
+    assert "requires OK" in result["reasons"][0]
+
+
+def test_live_router_blocks_unknown_integrity_before_executor():
+    router = ExecutionRouter()
+    _configure_live_router(router)
+    router._get_data_context = lambda live_price=None, order_context=None: {
+        "execution_mode": "live",
+        "integrity_status": "UNKNOWN",
+        **(order_context or {}),
+    }
+    router._get_risk_positions = lambda: []
+    router._get_live_executor = lambda venue: _RaisingExecutor()
+
+    result = router.route_order("hyperliquid", "BTC-PERP", "buy", 0.001, price=100.0)
+
+    assert result["status"] == "blocked"
+    assert "requires OK" in result["reasons"][0]
+    assert router.paper.get_positions() == []
 
 
 def test_live_execution_hard_gate_blocks_before_submission():

@@ -1,6 +1,6 @@
 """Pure final-decision helpers shared by runtime execution and audit replay.
 
-This module never submits orders, reads Redis, or touches persistence.  It only
+This module never submits orders, reads Redis, or touches persistence. It only
 turns explicitly supplied pre-trade facts/component outputs into a deterministic
 ALLOW/BLOCK decision.
 """
@@ -53,9 +53,14 @@ def evaluate_data_guardrails(spec: dict[str, Any]) -> dict[str, Any]:
         not reasons
         and mode == "live"
         and bool(spec.get("price_integrity_block_live", False))
-        and integrity == "WARNING"
+        and integrity != "OK"
     ):
-        reasons = ["Price integrity WARNING — cross-venue deviation too high"]
+        reason = (
+            "Price integrity WARNING — cross-venue deviation too high"
+            if integrity == "WARNING"
+            else f"Price integrity {integrity} — live execution requires OK"
+        )
+        reasons = [reason]
         stage = "price_integrity"
 
     return {
@@ -77,8 +82,6 @@ def evaluate_execution_agent(spec: dict[str, Any], *, as_of: Any = None) -> dict
     if not isinstance(proposed, dict) or not isinstance(market_state, dict):
         raise ValueError("execution-agent replay inputs are incomplete")
 
-    # Keep the production agent's thresholds authoritative while normalizing its
-    # wall-clock timestamp for deterministic replay.
     from backend.agents.execution_agent import ExecutionAgent
 
     agent = ExecutionAgent(

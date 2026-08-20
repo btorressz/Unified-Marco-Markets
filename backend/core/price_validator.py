@@ -3,12 +3,14 @@ from datetime import datetime, timezone
 
 from backend.core.state_store import StateStore
 from backend.core.event_bus import EventBus, EventType
+from backend.core.state_keys import normalize_price_symbol, price_snapshot_candidates
 
 logger = logging.getLogger(__name__)
 
 _ALERT_COOLDOWN_SECONDS = 60
 _EXECUTION_PRICE_SOURCES = {"pyth", "kraken", "coingecko"}
 _RESEARCH_PRICE_SOURCES = {"yfinance"}
+_CURRENT_PRICE_SOURCES = ("pyth", "kraken", "coingecko", "yfinance")
 
 
 class PriceValidator:
@@ -50,8 +52,6 @@ class PriceValidator:
             research_corroboration["deviation_bps"][f"yfinance_vs_{reference_name}"] = round(dev, 2)
             research_corroboration["aligned"] = dev <= self.deviation_threshold_bps
 
-        # Integrity remains execution-grade. Yahoo may corroborate but never turns
-        # one or zero execution-grade sources into an OK integrity result.
         if len(execution_prices) < 2:
             reason = "No execution-grade prices available" if not execution_prices else "Only one execution-grade price source available; cross-venue integrity is unverified"
             self._status = "UNKNOWN"
@@ -97,7 +97,7 @@ class PriceValidator:
         if warnings:
             self._emit_dislocation_alert_throttled(warnings, deviations, now)
 
-        result = {
+        return {
             "status": status,
             "integrity_status": status,
             "reason": self._reason,
@@ -110,6 +110,32 @@ class PriceValidator:
             "last_alert_ts": self._last_alert_ts,
             "ts": now.isoformat(),
         }
+
+    def validate_symbol(self, symbol: str) -> dict:
+        """Validate one canonical asset using only that asset's current snapshots."""
+        canonical = normalize_price_symbol(symbol).replace("_", "/")
+        prices: dict[str, float] = {}
+        feed_timestamps: dict[str, str] = {}
+        for venue in _CURRENT_PRICE_SOURCES:
+            snapshot = None
+            for cache_key in price_snapshot_candidates(venue, canonical):
+                snapshot = self._store.get_snapshot(cache_key)
+                if snapshot:
+                    break
+            if not isinstance(snapshot, dict):
+                continue
+            try:
+                price = float(snapshot.get("price", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if price <= 0:
+                continue
+            prices[venue] = price
+            if snapshot.get("ts") is not None:
+                feed_timestamps[venue] = snapshot["ts"]
+
+        result = self.validate(prices, feed_timestamps=feed_timestamps)
+        result["symbol"] = canonical
         return result
 
     def _emit_dislocation_alert_throttled(self, warnings: list[str], deviations: dict, now: datetime) -> None:

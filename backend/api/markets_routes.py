@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from backend.core.schemas import MarketDataResponse
 from backend.core.timeutils import window_to_seconds
-from backend.core.state_keys import PRICE_INTEGRITY, PRICE_INTEGRITY_LEGACY_LATEST, price_integrity_key, price_snapshot_candidates
+from backend.core.state_keys import PRICE_INTEGRITY, PRICE_INTEGRITY_LEGACY_LATEST, price_integrity_key
 from backend.core.state_store import StateStore
 from backend.core.price_authority import PriceAuthority
 from backend.core.price_validator import PriceValidator
@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/markets", tags=["markets"])
 
 _market_repo = MarketRepository()
 _store = StateStore()
-_validator = PriceValidator()
+_validator = PriceValidator(state_store=_store)
 _price_authority = PriceAuthority(state_store=_store)
 _research_history = ResearchMarketHistoryRepository()
 
@@ -46,12 +46,7 @@ def get_latest():
 
 @router.get("/research-price")
 def get_research_price(symbol: str = Query(default="SOL/USD")):
-    """Return the normal price chain plus explicit Yahoo research fallback.
-
-    This endpoint is informational only. ExecutionRouter and readiness continue
-    to call PriceAuthority without include_research_fallback and therefore never
-    treat Yahoo as execution-grade.
-    """
+    """Return the normal price chain plus explicit Yahoo research fallback."""
     result = _price_authority.get_price(symbol, include_research_fallback=True)
     return {
         **result.to_dict(),
@@ -80,7 +75,8 @@ def get_research_history_coverage(symbol: str | None = None, start_ts: datetime 
     symbols = [symbol.upper()] if symbol else list(SUPPORTED_SYMBOLS)
     if any(item not in SUPPORTED_SYMBOLS for item in symbols) or interval != INTERVAL_SECONDS:
         raise HTTPException(status_code=422, detail="Supported contract: BTC/USD, ETH/USD, SOL/USD at 300 seconds")
-    end = end_ts or datetime.now(timezone.utc); start = start_ts or end - timedelta(days=30)
+    end = end_ts or datetime.now(timezone.utc)
+    start = start_ts or end - timedelta(days=30)
     return {"coverage": [_research_history.get_coverage(item, interval, start, end, SOURCE_ID) for item in symbols], "read_only": True}
 
 
@@ -90,7 +86,8 @@ def get_research_history(symbol: str, start_ts: datetime, end_ts: datetime,
                          limit: int = Query(default=MAX_HISTORY_LIMIT, ge=1, le=MAX_HISTORY_LIMIT)):
     if symbol.upper() not in SUPPORTED_SYMBOLS or interval != INTERVAL_SECONDS:
         raise HTTPException(status_code=422, detail="Supported contract: BTC/USD, ETH/USD, SOL/USD at 300 seconds")
-    if end_ts < start_ts: raise HTTPException(status_code=422, detail="end_ts must be at or after start_ts")
+    if end_ts < start_ts:
+        raise HTTPException(status_code=422, detail="end_ts must be at or after start_ts")
     rows = _research_history.get_history(symbol.upper(), interval, start_ts, end_ts, source, limit)
     return {"source_id": source, "symbol": symbol.upper(), "interval_seconds": interval, "count": len(rows), "bars": rows, "read_only": True}
 
@@ -110,20 +107,7 @@ def get_integrity(symbol: str = Query(default="SOL/USD")):
     symbol = symbol.upper().replace("-PERP", "/USD")
     if symbol not in {"BTC/USD", "ETH/USD", "SOL/USD"}:
         raise HTTPException(status_code=422, detail="Supported integrity symbols: BTC/USD, ETH/USD, SOL/USD")
-    prices = {}
-    feed_ts = {}
-    for venue in ["pyth", "kraken", "coingecko", "yfinance"]:
-        snap = None
-        for key in price_snapshot_candidates(venue, symbol):
-            snap = _store.get_snapshot(key)
-            if snap:
-                break
-        if snap and snap.get("price"):
-            prices[venue] = snap["price"]
-            feed_ts[venue] = snap.get("ts", datetime.now(timezone.utc).isoformat())
-
-    result = _validator.validate(prices, feed_timestamps=feed_ts)
-    result["symbol"] = symbol
+    result = _validator.validate_symbol(symbol)
     _store.set_snapshot(price_integrity_key(symbol), result, ttl=60)
     if symbol == "SOL/USD":
         _store.set_snapshot(PRICE_INTEGRITY, result, ttl=60)
