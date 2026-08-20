@@ -43,6 +43,33 @@ CREATE TABLE IF NOT EXISTS market_ticks (
     ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Immutable observed Yahoo bars used only for reproducible research.  This is
+-- deliberately separate from market_ticks and never participates in pricing.
+CREATE TABLE IF NOT EXISTS research_market_bars (
+    id BIGSERIAL PRIMARY KEY,
+    source_id VARCHAR NOT NULL,
+    provider VARCHAR NOT NULL,
+    symbol VARCHAR NOT NULL,
+    provider_symbol VARCHAR,
+    interval_seconds INTEGER NOT NULL CHECK (interval_seconds > 0),
+    ts TIMESTAMPTZ NOT NULL,
+    open DOUBLE PRECISION NOT NULL,
+    high DOUBLE PRECISION NOT NULL,
+    low DOUBLE PRECISION NOT NULL,
+    close DOUBLE PRECISION NOT NULL,
+    volume BIGINT,
+    research_grade BOOLEAN NOT NULL DEFAULT TRUE,
+    authoritative BOOLEAN NOT NULL DEFAULT FALSE,
+    execution_eligible BOOLEAN NOT NULL DEFAULT FALSE,
+    synthetic BOOLEAN NOT NULL DEFAULT FALSE,
+    ingest_run_id UUID,
+    retrieved_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (source_id, symbol, interval_seconds, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_research_market_bars_symbol_interval_ts
+    ON research_market_bars(symbol, interval_seconds, ts);
+
 CREATE TABLE IF NOT EXISTS funding_ticks (
     id SERIAL PRIMARY KEY,
     venue VARCHAR(50) NOT NULL,

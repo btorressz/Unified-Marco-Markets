@@ -190,7 +190,8 @@ def aggregate_bucket(symbol_results: dict[str, dict[str, dict[str, Any]]], symbo
     return {"observations": observations, "coverage_rule": AGGREGATION_VERSION}
 
 
-def compute_event_study(event: dict[str, Any], histories: dict[str, list[dict[str, Any]]], *, now: Any = None) -> dict[str, Any]:
+def compute_event_study(event: dict[str, Any], histories: dict[str, list[dict[str, Any]]], *, now: Any = None,
+                        history_metadata: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     normalized = normalize_study_event(event)
     directions = expected_directions(normalized["event_type"])
     symbol_results = {symbol: analyze_symbol(histories.get(symbol), normalized.get("event_timestamp"), now=now) for symbol in {s for meta in ASSET_BUCKETS.values() for s in meta["symbols"]}}
@@ -205,7 +206,9 @@ def compute_event_study(event: dict[str, Any], histories: dict[str, list[dict[st
     return {
         "event": normalized,
         "expectation_model": {"version": EXPECTATION_MAP_VERSION, "claim_type": "expected_market_impact", "observed": False, "causal_claim": False},
-        "observation_model": {"version": OBSERVED_DIRECTION_VERSION, "neutral_band": NEUTRAL_BAND, "market_history": "strict Yahoo research history", "synthetic_allowed": False},
+        "observation_model": {"version": OBSERVED_DIRECTION_VERSION, "neutral_band": NEUTRAL_BAND,
+                              "market_history": "injected observed research history", "history_metadata": history_metadata or {},
+                              "synthetic_allowed": False},
         "asset_bucket_model": {"version": ASSET_BUCKET_VERSION, "aggregation_version": AGGREGATION_VERSION},
         "horizons": list(HORIZONS), "buckets": buckets, "summary": summary,
         "event_study": True, "causal_claim": False, "claim_boundary": CAUSALITY_NOTICE,

@@ -19,6 +19,9 @@ from typing import Any, Iterable
 from backend.core.state_keys import price_snapshot_key
 from backend.core.state_store import StateStore
 from backend.data.repositories.market_repo import MarketRepository
+from backend.data.repositories.research_market_history_repo import (
+    INTERVAL_SECONDS, MAX_HISTORY_LIMIT, ResearchMarketHistoryRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,7 @@ CRYPTO_SYMBOLS = {
     "ETH": "ETH-USD",
     "SOL": "SOL-USD",
 }
+MAX_STRICT_HISTORY_ROWS = MAX_HISTORY_LIMIT
 
 # Cross-asset universe useful for macro/geopolitical market-reaction research.
 # This is observation data only; geopolitical interpretation remains under
@@ -213,7 +217,7 @@ def _market_identity(symbol: str) -> tuple[str, str]:
         return value, provider_symbol
 
 
-def _history_rows(hist: Any, limit: int = 365) -> list[dict[str, Any]]:
+def _history_rows(hist: Any, limit: int = MAX_STRICT_HISTORY_ROWS) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if hist is None or getattr(hist, "empty", True):
         return rows
@@ -224,29 +228,30 @@ def _history_rows(hist: Any, limit: int = 365) -> list[dict[str, Any]]:
                 ts = ts.replace(tzinfo=timezone.utc)
             else:
                 ts = ts.astimezone(timezone.utc)
-            close = float(row.get("Close", 0) or 0)
-            if not math.isfinite(close) or close <= 0:
+            values = {name: float(row.get(name.title())) for name in ("open", "high", "low", "close")}
+            if any(not math.isfinite(value) or value <= 0 for value in values.values()):
                 continue
+            if values["high"] < max(values["open"], values["close"]) or values["low"] > min(values["open"], values["close"]) or values["high"] < values["low"]:
+                continue
+            raw_volume = row.get("Volume")
+            volume = None if raw_volume is None or (isinstance(raw_volume, float) and math.isnan(raw_volume)) else int(raw_volume)
+            if volume is not None and volume < 0: continue
             rows.append({
                 "ts": ts.isoformat(),
-                "open": float(row.get("Open", close) or close),
-                "high": float(row.get("High", close) or close),
-                "low": float(row.get("Low", close) or close),
-                "close": close,
-                "volume": int(row.get("Volume", 0) or 0),
+                **values, "volume": volume,
             })
         except (TypeError, ValueError, OverflowError):
             continue
     return rows
 
 
-def _strict_yahoo_history(provider_symbol: str, period: str, interval: str, limit: int = 365) -> dict[str, Any]:
+def _strict_yahoo_history(provider_symbol: str, period: str, interval: str, limit: int = MAX_STRICT_HISTORY_ROWS) -> dict[str, Any]:
     """Fetch only real Yahoo observations; never return demo/synthetic prices."""
     try:
         import yfinance as yf  # type: ignore
 
         hist = yf.Ticker(provider_symbol).history(period=period, interval=interval, auto_adjust=False)
-        rows = _history_rows(hist, limit=limit)
+        rows = _history_rows(hist, limit=max(1, min(int(limit), MAX_STRICT_HISTORY_ROWS)))
         if not rows:
             raise RuntimeError("empty yfinance response")
         return {
@@ -269,9 +274,9 @@ def _strict_yahoo_history(provider_symbol: str, period: str, interval: str, limi
         }
 
 
-def fetch_crypto_history(symbol: str, period: str = "7d", interval: str = "5m") -> dict[str, Any]:
+def fetch_crypto_history(symbol: str, period: str = "7d", interval: str = "5m", limit: int = MAX_STRICT_HISTORY_ROWS) -> dict[str, Any]:
     canonical, provider_symbol = _crypto_identity(symbol)
-    result = _strict_yahoo_history(provider_symbol, period=period, interval=interval)
+    result = _strict_yahoo_history(provider_symbol, period=period, interval=interval, limit=limit)
     return {"symbol": canonical, **result}
 
 
@@ -358,9 +363,9 @@ def fetch_crypto_quotes(symbols: Iterable[str] | None = None) -> dict[str, Any]:
     }
 
 
-def fetch_market_history(symbol: str, period: str = "1mo", interval: str = "1d") -> dict[str, Any]:
+def fetch_market_history(symbol: str, period: str = "1mo", interval: str = "1d", limit: int = MAX_STRICT_HISTORY_ROWS) -> dict[str, Any]:
     canonical, provider_symbol = _market_identity(symbol)
-    result = _strict_yahoo_history(provider_symbol, period=period, interval=interval)
+    result = _strict_yahoo_history(provider_symbol, period=period, interval=interval, limit=limit)
     return {"symbol": canonical, **result}
 
 
@@ -647,6 +652,40 @@ class YFinanceIngestor:
         if run_context and db_row:
             run_context.record_persisted(1)
         return payload
+
+
+class YFinanceHistoryIngestor:
+    """Coverage-aware bounded persistence for observed five-minute crypto bars."""
+    source_id = "yfinance_crypto_history_research"
+
+    def __init__(self, history_repo: ResearchMarketHistoryRepository | None = None):
+        self.history_repo = history_repo or ResearchMarketHistoryRepository()
+
+    async def fetch_crypto_history(self, symbols: Iterable[str] | None = None, run_context=None) -> list[dict[str, Any]]:
+        persisted = []; failures = []; received = 0; provider_times = []
+        for symbol in list(symbols or CRYPTO_SYMBOLS.keys()):
+            canonical, provider_symbol = _crypto_identity(symbol)
+            existing = self.history_repo.get_first_latest(canonical, INTERVAL_SECONDS, self.source_id)
+            period = "5d" if int(existing.get("row_count") or 0) else "1mo"
+            result = await asyncio.to_thread(fetch_crypto_history, canonical, period, "5m", MAX_STRICT_HISTORY_ROWS)
+            rows = result.get("history") or []
+            if not result.get("found") or result.get("synthetic") is not False:
+                failures.append(canonical); continue
+            received += len(rows)
+            count = self.history_repo.insert_bars_idempotent(rows, symbol=canonical, provider_symbol=provider_symbol,
+                ingest_run_id=getattr(run_context, "run_id", None))
+            persisted.append({"symbol": canonical, "period": period, "received": len(rows), "persisted": count})
+            if rows: provider_times.append(_parse_provider_ts(rows[-1]["ts"]))
+            if run_context: run_context.record_persisted(count)
+        if run_context:
+            run_context.record_received(received)
+            run_context.metadata.update({"symbols": persisted, "failed_symbols": failures, "interval_seconds": INTERVAL_SECONDS})
+            if provider_times: run_context.set_provider_timestamp(max(provider_times))
+            if failures and not persisted: run_context.mark_failure(RuntimeError("Yahoo history unavailable for all symbols"))
+            else:
+                run_context.mark_success()
+                if failures: run_context.metadata["partial_provider_failure"] = True
+        return persisted
 
 
 class YFinancePriceStream:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -13,7 +13,8 @@ from backend.compute.sanctions_risk import score_sanctions, sanctions_impact, sa
 from backend.compute.conflict_escalation import score_conflicts, conflict_market_impact
 from backend.compute.shipping_energy_risk import score_chokepoints, score_energy_shock, supply_chain_impact
 from backend.compute.geopolitical_market_impact import estimate_market_impact
-from backend.compute.geopolitical_event_study import ASSET_BUCKETS, MAX_EVENTS, MAX_SYMBOLS, compute_event_study, normalize_study_event
+from backend.compute.geopolitical_event_study import (ASSET_BUCKETS, HORIZONS, MAX_EVENTS, MAX_SYMBOLS,
+    MAX_REFERENCE_AGE_SECONDS, MAX_TARGET_LAG_SECONDS, compute_event_study, normalize_study_event)
 from backend.compute.portfolio_protection import scenario_protection
 from backend.ingest.quality import is_observed_snapshot
 from backend.ingest.yfinance_ingest import fetch_market_history
@@ -23,10 +24,12 @@ from backend.agents.conflict_agent import ConflictAgent
 from backend.agents.energy_shock_agent import EnergyShockAgent
 from backend.agents.protection_agent import ProtectionAgent
 from backend.data.repositories.research_event_repo import ResearchEventRepository
+from backend.data.repositories.research_market_history_repo import INTERVAL_SECONDS, SOURCE_ID, ResearchMarketHistoryRepository
 
 router = APIRouter(prefix="/api/geopolitical", tags=["geopolitical"])
 _store = StateStore()
 _research_events = ResearchEventRepository()
+_research_history = ResearchMarketHistoryRepository()
 
 
 def _state() -> dict[str, Any]:
@@ -96,9 +99,22 @@ def reaction_lab_study(event_id: str):
     symbols = list(dict.fromkeys(symbol for meta in ASSET_BUCKETS.values() for symbol in meta["symbols"]))[:MAX_SYMBOLS]
     histories: dict[str, list[dict[str, Any]]] = {}
     provider_status = {}
-    # One strict request per unique symbol; all horizons are derived locally.
+    history_metadata = {}
+    event_ts = datetime.fromisoformat(str(event["event_timestamp"]).replace("Z", "+00:00"))
+    start_ts = event_ts - timedelta(seconds=MAX_REFERENCE_AGE_SECONDS)
+    end_ts = event_ts + timedelta(seconds=max(HORIZONS.values()) + MAX_TARGET_LAG_SECONDS)
+    # Load each crypto series once from durable storage. GET remains read-only.
+    for symbol in ("BTC", "ETH", "SOL"):
+        try: rows = _research_history.get_history(f"{symbol}/USD", INTERVAL_SECONDS, start_ts, end_ts, SOURCE_ID, 10000)
+        except Exception: rows = []
+        if rows:
+            histories[symbol] = rows
+            history_metadata[symbol] = {"history_source": "durable_research_market_bars", "provider": "Yahoo Finance", "source_id": SOURCE_ID, "persisted": True}
+            provider_status[symbol] = {"found": True, "synthetic": False, **history_metadata[symbol]}
+    remote_symbols = [symbol for symbol in symbols if symbol not in histories]
+    # One strict request per missing unique symbol; all horizons are derived locally.
     with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {executor.submit(fetch_market_history, symbol, period="1mo", interval="5m"): symbol for symbol in symbols}
+        futures = {executor.submit(fetch_market_history, symbol, period="1mo", interval="5m", limit=10000): symbol for symbol in remote_symbols}
         for future in as_completed(futures):
             symbol = futures[future]
             try:
@@ -107,8 +123,9 @@ def reaction_lab_study(event_id: str):
                 result = {"history": [], "found": False, "synthetic": False, "error": str(exc)}
             # Strict-path defense in depth: synthetic/degraded observations are never analyzed.
             histories[symbol] = list(result.get("history") or [])[:9000] if result.get("found") and result.get("synthetic") is False else []
-            provider_status[symbol] = {"found": bool(histories[symbol]), "synthetic": result.get("synthetic", False), "error": result.get("error")}
-    return {**compute_event_study(event, histories), "provider_status": provider_status, "unique_symbol_count": len(symbols)}
+            history_metadata[symbol] = {"history_source": "yahoo_on_demand", "provider": "Yahoo Finance", "source_id": "yfinance_crypto_research" if symbol in {"BTC","ETH","SOL"} else None, "persisted": False}
+            provider_status[symbol] = {"found": bool(histories[symbol]), "synthetic": result.get("synthetic", False), "error": result.get("error"), **history_metadata[symbol]}
+    return {**compute_event_study(event, histories, history_metadata=history_metadata), "provider_status": provider_status, "unique_symbol_count": len(symbols)}
 
 
 @router.get("/sanctions")

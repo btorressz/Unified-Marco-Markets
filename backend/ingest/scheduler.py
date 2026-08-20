@@ -16,7 +16,7 @@ from backend.ingest.kraken_ingest import KrakenIngestor
 from backend.ingest.coingecko_ingest import CoinGeckoIngestor
 from backend.ingest.pyth_ingest import PythIngestor
 from backend.ingest.drift_ingest import DriftIngestor
-from backend.ingest.yfinance_ingest import YFinanceIngestor
+from backend.ingest.yfinance_ingest import YFinanceHistoryIngestor, YFinanceIngestor
 from backend.data.repositories.ingest_repo import IngestRepository
 from backend.ingest.provenance import IngestRunContext
 from backend.ingest.source_registry import get_source
@@ -42,6 +42,7 @@ class IngestScheduler:
         self.pyth = PythIngestor(state_store=self.state_store)
         self.drift = DriftIngestor(state_store=self.state_store)
         self.yfinance = YFinanceIngestor(state_store=self.state_store)
+        self.yfinance_history = YFinanceHistoryIngestor()
 
     def schedule_all(self) -> None:
         self.scheduler.add_job(
@@ -74,6 +75,8 @@ class IngestScheduler:
             self._run_yfinance_crypto, "interval", seconds=60, id="yfinance_crypto_ingest",
             name="Yahoo Finance Crypto Research Fallback", replace_existing=True,
         )
+        self.scheduler.add_job(self._run_yfinance_crypto_history, "interval", hours=1,
+            id="yfinance_crypto_history_ingest", name="Yahoo Finance Crypto Research History", replace_existing=True)
 
         self.scheduler.start()
         logger.info("IngestScheduler started with %d jobs", len(self.scheduler.get_jobs()))
@@ -214,3 +217,10 @@ class IngestScheduler:
                 logger.debug("Yahoo Finance crypto research ingest completed")
         except Exception:
             logger.error("Yahoo Finance crypto research ingest job failed", exc_info=True)
+
+    async def _run_yfinance_crypto_history(self) -> None:
+        try:
+            await self._run_source("yfinance_crypto_history_research", "yfinance-crypto-history",
+                lambda context: self.yfinance_history.fetch_crypto_history(run_context=context))
+        except Exception:
+            logger.error("Yahoo Finance crypto research history ingest job failed", exc_info=True)

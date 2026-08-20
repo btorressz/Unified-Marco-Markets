@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -10,6 +10,9 @@ from backend.core.state_store import StateStore
 from backend.core.price_authority import PriceAuthority
 from backend.core.price_validator import PriceValidator
 from backend.data.repositories.market_repo import MarketRepository
+from backend.data.repositories.research_market_history_repo import (
+    INTERVAL_SECONDS, MAX_HISTORY_LIMIT, SOURCE_ID, SUPPORTED_SYMBOLS, ResearchMarketHistoryRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +22,7 @@ _market_repo = MarketRepository()
 _store = StateStore()
 _validator = PriceValidator()
 _price_authority = PriceAuthority(state_store=_store)
+_research_history = ResearchMarketHistoryRepository()
 
 
 @router.get("/latest", response_model=list[MarketDataResponse])
@@ -68,6 +72,27 @@ def get_history(venue: str = Query(default="hyperliquid"), window: str = Query(d
     except Exception as exc:
         logger.error("Error fetching market history: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch market history")
+
+
+@router.get("/research-history/coverage")
+def get_research_history_coverage(symbol: str | None = None, start_ts: datetime | None = None,
+                                  end_ts: datetime | None = None, interval: int = INTERVAL_SECONDS):
+    symbols = [symbol.upper()] if symbol else list(SUPPORTED_SYMBOLS)
+    if any(item not in SUPPORTED_SYMBOLS for item in symbols) or interval != INTERVAL_SECONDS:
+        raise HTTPException(status_code=422, detail="Supported contract: BTC/USD, ETH/USD, SOL/USD at 300 seconds")
+    end = end_ts or datetime.now(timezone.utc); start = start_ts or end - timedelta(days=30)
+    return {"coverage": [_research_history.get_coverage(item, interval, start, end, SOURCE_ID) for item in symbols], "read_only": True}
+
+
+@router.get("/research-history")
+def get_research_history(symbol: str, start_ts: datetime, end_ts: datetime,
+                         interval: int = INTERVAL_SECONDS, source: str = SOURCE_ID,
+                         limit: int = Query(default=MAX_HISTORY_LIMIT, ge=1, le=MAX_HISTORY_LIMIT)):
+    if symbol.upper() not in SUPPORTED_SYMBOLS or interval != INTERVAL_SECONDS:
+        raise HTTPException(status_code=422, detail="Supported contract: BTC/USD, ETH/USD, SOL/USD at 300 seconds")
+    if end_ts < start_ts: raise HTTPException(status_code=422, detail="end_ts must be at or after start_ts")
+    rows = _research_history.get_history(symbol.upper(), interval, start_ts, end_ts, source, limit)
+    return {"source_id": source, "symbol": symbol.upper(), "interval_seconds": interval, "count": len(rows), "bars": rows, "read_only": True}
 
 
 @router.get("/funding")
