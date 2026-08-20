@@ -314,6 +314,26 @@ CREATE INDEX IF NOT EXISTS idx_provenance_source_created ON data_provenance (sou
 CREATE INDEX IF NOT EXISTS idx_provenance_artifact ON data_provenance (artifact_type, artifact_id);
 CREATE INDEX IF NOT EXISTS idx_provenance_created ON data_provenance (created_at DESC);
 
+-- Append-only research history, separate from the operational events bus.
+CREATE TABLE IF NOT EXISTS research_events (
+ id UUID PRIMARY KEY DEFAULT gen_random_uuid(), event_key VARCHAR(64) UNIQUE NOT NULL,
+ event_family VARCHAR(100), event_type VARCHAR(100) NOT NULL, source VARCHAR(100) NOT NULL, source_id VARCHAR(100) NOT NULL,
+ authority VARCHAR(300), jurisdiction VARCHAR(100), claim_type VARCHAR(60) NOT NULL,
+ observed BOOLEAN NOT NULL, authoritative BOOLEAN NOT NULL, proxy BOOLEAN NOT NULL, synthetic BOOLEAN NOT NULL,
+ execution_eligible BOOLEAN NOT NULL, event_timestamp TIMESTAMPTZ, event_time_basis VARCHAR(100),
+ published_at TIMESTAMPTZ, effective_at TIMESTAMPTZ, provider_updated_at TIMESTAMPTZ,
+ detected_at TIMESTAMPTZ, retrieved_at TIMESTAMPTZ, source_record_id VARCHAR(300),
+ source_record_type VARCHAR(100), change_type VARCHAR(40), evidence_contract_version INTEGER,
+ transformation VARCHAR(200), transformation_version VARCHAR(50), content_hash VARCHAR(128), dataset_version VARCHAR(128),
+ study_eligible BOOLEAN NOT NULL DEFAULT FALSE, payload JSONB NOT NULL DEFAULT '{}', evidence JSONB NOT NULL DEFAULT '{}',
+ lineage JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_research_events_source_time ON research_events(source_id,event_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_research_events_family_time ON research_events(event_family,event_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_research_events_type_time ON research_events(event_type,event_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_research_events_record_time ON research_events(source_record_id,event_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_research_events_study_time ON research_events(event_timestamp DESC) WHERE study_eligible=TRUE;
+
 -- Additive, auditable ML registry. Artifacts originate only from local training.
 CREATE TABLE IF NOT EXISTS ml_datasets (
  id VARCHAR(64) PRIMARY KEY, dataset_hash CHAR(64) UNIQUE NOT NULL, manifest JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

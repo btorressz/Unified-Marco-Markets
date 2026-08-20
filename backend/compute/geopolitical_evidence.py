@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any, Iterable
 
 from backend.ingest.quality import is_authoritative_observation
@@ -12,6 +13,30 @@ CLAIM_PROXY = "proxy"
 CLAIM_STATIC_MAPPING = "static_mapping"
 CLAIM_SCENARIO = "scenario"
 CLAIM_EXPECTED_IMPACT = "expected_market_impact"
+
+
+def deterministic_event_key(*, source_id: str, source_record_id: str, event_type: str,
+                            transition: dict[str, Any] | None = None) -> str:
+    facts = {"source_id": source_id, "source_record_id": source_record_id,
+             "event_type": event_type, "transition": transition or {}}
+    return hashlib.sha256(json.dumps(facts, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+def normalize_research_event(*, event_family: str, event_type: str, source: str, source_id: str,
+                             source_record_id: str, claim_type: str, event_timestamp=None,
+                             event_time_basis=None, transition=None, **fields) -> dict[str, Any]:
+    """Normalize an immutable provider event without manufacturing time facts."""
+    transition = transition or {}
+    authoritative = fields.pop("authoritative", fields.pop("authoritative_evidence", False)) is True
+    result = {"event_family": event_family, "event_type": event_type, "source": source,
+              "source_id": source_id, "source_record_id": source_record_id, "claim_type": claim_type,
+              "event_timestamp": event_timestamp, "event_time_basis": event_time_basis,
+              "observed": fields.pop("observed", False) is True, "authoritative": authoritative,
+              "proxy": fields.pop("proxy", False) is True, "synthetic": fields.pop("synthetic", False) is True,
+              "execution_eligible": False, **fields}
+    result["event_key"] = deterministic_event_key(source_id=source_id, source_record_id=source_record_id,
+                                                   event_type=event_type, transition=transition)
+    return result
 
 
 def authoritative_evidence(record: dict[str, Any] | None, *, source_id: str | None = None) -> dict[str, Any]:

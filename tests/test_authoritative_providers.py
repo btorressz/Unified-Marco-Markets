@@ -18,6 +18,19 @@ class Repo:
     def record_source_observation(self, **kwargs): self.rows.append(kwargs); return {"id": len(self.rows)}
 
 
+class DurableRepo(Repo):
+    def __init__(self): super().__init__(); self.completed = None
+    def get_latest_completed_run(self, source_id): return {"id":"prior"} if self.completed else None
+    def load_source_observations_for_run(self, source_id, run_id, artifact_type, limit=10000):
+        return [{"metadata":{"observation":row["observation"]}} for row in self.completed or []]
+    def checkpoint(self): self.completed=list(self.rows); self.rows=[]
+
+
+class ResearchRepo:
+    def __init__(self): self.rows={}
+    def insert_event_idempotent(self,row): self.rows.setdefault(row["event_key"],row); return self.rows[row["event_key"]]
+
+
 class Response:
     def __init__(self, *, content=b"", payload=None, failure=False): self.content = content; self.payload = payload; self.failure = failure
     def raise_for_status(self):
@@ -85,6 +98,21 @@ def test_ofac_failure_preserves_last_good_snapshot():
     assert result["provider_status"] == "unavailable" and result["quality"]["observed"] is False
     assert store.snapshots["sanctions:ofac:latest"] == {"known_good": True}
     assert store.writes == []
+
+
+def test_ofac_restart_reconstructs_durable_baseline_and_events_are_idempotent():
+    repo,history=DurableRepo(),ResearchRepo()
+    first=OFACIngestor(state_store=Store(),ingest_repo=repo,research_event_repo=history).process_records(records(),retrieved_at="2026-08-20T10:00:00+00:00")
+    assert first["changes_available"] is False and not history.rows
+    repo.checkpoint()
+    same=OFACIngestor(state_store=Store(),ingest_repo=repo,research_event_repo=history).process_records(records("later"),retrieved_at="2026-08-20T11:00:00+00:00")
+    assert same["changes_available"] is True and same["unchanged_count"] == 1 and not history.rows
+    repo.checkpoint()
+    extra=deepcopy(records()); extra[0]["observation"]["source_record_id"]="456"; extra[0]["observation"]["provider_ids"]["uid"]="456"
+    added=OFACIngestor(state_store=Store(),ingest_repo=repo,research_event_repo=history).process_records(records()+extra,retrieved_at="2026-08-20T12:00:00+00:00")
+    assert added["added_count"] == 1 and len(history.rows) == 1
+    immutable=next(iter(history.rows.values()))
+    assert immutable["effective_at"] is None and immutable["event_time_basis"] == "provider_change_detected_at_retrieval"
 
 
 def test_wto_missing_key_is_truthful_and_does_not_write():

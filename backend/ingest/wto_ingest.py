@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+import hashlib
+import json
 
 import httpx
 
@@ -10,6 +12,8 @@ from backend import config
 from backend.core.state_keys import WTO_TRADE
 from backend.core.state_store import StateStore
 from backend.data.repositories.ingest_repo import IngestRepository
+from backend.data.repositories.research_event_repo import ResearchEventRepository
+from backend.compute.geopolitical_evidence import normalize_research_event
 from backend.ingest.quality import authoritative_evidence_envelope, observation_quality
 
 WTO_SOURCE_ID = "wto_trade"
@@ -46,13 +50,14 @@ def normalize_wto_record(row: dict[str, Any], *, retrieved_at: str) -> dict[str,
 
 class WTOIngestor:
     def __init__(self, state_store=None, ingest_repo=None, client_factory=None, api_key: str | None = None,
-                 indicators=None, reporters=None, partners=None):
+                 indicators=None, reporters=None, partners=None, research_event_repo=None):
         self.state_store = state_store or StateStore(); self.ingest_repo = ingest_repo or IngestRepository()
         self.client_factory = client_factory or (lambda: httpx.AsyncClient(timeout=30.0))
         self.api_key = config.WTO_API_KEY if api_key is None else api_key
         self.indicators = bounded(indicators or config.WTO_INDICATORS, MAX_INDICATORS)
         self.reporters = bounded(reporters or config.WTO_REPORTERS, MAX_REPORTERS)
         self.partners = bounded(partners or config.WTO_PARTNERS, MAX_PARTNERS)
+        self.research_event_repo = research_event_repo or ResearchEventRepository()
 
     def unavailable(self, status: str) -> dict[str, Any]:
         return {"source": "WTO", "source_id": WTO_SOURCE_ID, "provider_status": status,
@@ -85,6 +90,20 @@ class WTOIngestor:
                 lineage={"provider": "WTO Timeseries API", "artifact": "indicator observation", "transformation": "WTO normalizer v1"},
             )
             if saved and saved.get("id") is not None: provenance_ids.append(str(saved["id"]))
+            evidence=record["evidence"]; observation=record["observation"]
+            digest=hashlib.sha256(json.dumps(observation,sort_keys=True,separators=(",",":"),default=str).encode()).hexdigest()
+            authority=record.get("authority") or {}
+            event=normalize_research_event(event_family="trade_observation",event_type="WTO_TRADE_OBSERVATION",
+                source="WTO",source_id=WTO_SOURCE_ID,source_record_id=evidence["source_record_id"],claim_type="observed_evidence",
+                event_timestamp=evidence.get("retrieved_at"),event_time_basis="ingest_observed_at",
+                transition={"content_hash":digest,"provider_updated_at":evidence.get("provider_updated_at")},
+                observed=True,authoritative=True,study_eligible=False,authority=authority.get("name"),jurisdiction=authority.get("jurisdiction"),
+                provider_updated_at=evidence.get("provider_updated_at"),retrieved_at=evidence.get("retrieved_at"),
+                source_record_type=evidence.get("source_record_type"),evidence_contract_version=2,
+                transformation=evidence.get("transformation"),transformation_version=str(evidence.get("transformation_version") or ""),
+                content_hash=digest,payload=observation,evidence=evidence,
+                lineage={"ingest_run_id":str(getattr(run_context,"run_id","") or ""),"provenance_id":str(saved.get("id")) if saved else None})
+            self.research_event_repo.insert_event_idempotent(event)
         if run_context: run_context.record_persisted(len(records))
         snapshot = {"source": "WTO", "source_id": WTO_SOURCE_ID, "provider_status": "ok",
                     "quality": observation_quality(source="WTO", source_id=WTO_SOURCE_ID, available=True, authoritative=True, contract_version=2),
