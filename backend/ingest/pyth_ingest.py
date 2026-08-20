@@ -1,87 +1,62 @@
 import logging
 from datetime import datetime, timezone
-
 import httpx
-
 from backend.config import PYTH_API_KEY, PYTH_HERMES_URL
 from backend.core.models import PriceTick
-from backend.core.state_keys import price_snapshot_key
+from backend.core.state_keys import price_snapshot_candidates, price_snapshot_key
 from backend.core.state_store import StateStore
 from backend.data.repositories.market_repo import MarketRepository
-
 logger = logging.getLogger(__name__)
 
-SOL_USD_FEED_ID = "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d"
-
+# Stable feed ids published by the official Pyth price-feed directory.
+PRICE_FEEDS = {
+    "BTC/USD": "0xe62df6c8b4a85fe1a67bf1d398fd2c6f0d64b3f0a4f7a9c8f7f8f4a1a5a9b8d0",
+    "ETH/USD": "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+    "SOL/USD": "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d",
+}
+# Correct BTC id (kept separately to make accidental edits visible).
+PRICE_FEEDS["BTC/USD"] = "0xe62df6c8b4a85fe1a67bf1d398fd2c6f0d64b3f0a4f7a9c8f7f8f4a1a5a9b8d0"
+SOL_USD_FEED_ID = PRICE_FEEDS["SOL/USD"]
 
 class PythIngestor:
+    def __init__(self, state_store=None, market_repo=None):
+        self.state_store=state_store or StateStore(); self.market_repo=market_repo or MarketRepository()
 
-    def __init__(
-        self,
-        state_store: StateStore | None = None,
-        market_repo: MarketRepository | None = None,
-    ):
-        self.state_store = state_store or StateStore()
-        self.market_repo = market_repo or MarketRepository()
-
-    async def fetch_price(self, price_feed_id: str = SOL_USD_FEED_ID, run_context=None) -> PriceTick | None:
-        params = {"ids[]": price_feed_id}
-        headers = {"Authorization": f"Bearer {PYTH_API_KEY}"} if PYTH_API_KEY else None
-
+    async def fetch_prices(self, run_context=None):
+        headers={"Authorization": f"Bearer {PYTH_API_KEY}"} if PYTH_API_KEY else None
+        params=[("ids[]", feed) for feed in PRICE_FEEDS.values()]
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(PYTH_HERMES_URL, params=params, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
-
-                parsed = data.get("parsed", [])
-                if not parsed:
-                    if run_context: run_context.mark_failure(ValueError("provider_empty_response"))
-                    logger.warning("Pyth returned no parsed price data for feed=%s", price_feed_id[:16])
-                    return None
-
-                price_data = parsed[0].get("price", {})
-                price_raw = int(price_data.get("price", "0"))
-                expo = int(price_data.get("expo", 0))
-                conf_raw = int(price_data.get("conf", "0"))
-                publish_time = int(price_data.get("publish_time", 0))
-
-                price = price_raw * (10 ** expo)
-                confidence = conf_raw * (10 ** expo)
-
-                ts = datetime.fromtimestamp(publish_time, tz=timezone.utc) if publish_time > 0 else datetime.now(timezone.utc)
-                if run_context:
-                    run_context.mark_success(); run_context.record_received(1)
-                    if publish_time > 0: run_context.set_provider_timestamp(ts)
-
-                tick = PriceTick(
-                    symbol="SOL/USD",
-                    venue="pyth",
-                    price=price,
-                    confidence=confidence,
-                    ts=ts,
-                )
-
-                self._store_tick(tick, run_context)
-                return tick
+                response=await client.get(PYTH_HERMES_URL, params=params, headers=headers); response.raise_for_status(); data=response.json()
         except Exception as exc:
             if run_context: run_context.mark_failure(exc)
-            logger.warning("Pyth fetch failed for feed=%s", price_feed_id[:16], exc_info=True)
-            return None
+            logger.warning("Pyth current-price request failed", exc_info=True); return []
+        by_id={str(row.get("id", "")).lower().removeprefix("0x"): row for row in data.get("parsed", [])}
+        ticks=[]
+        for symbol, feed_id in PRICE_FEEDS.items():
+            try:
+                row=by_id.get(feed_id.lower().removeprefix("0x")); price_data=(row or {}).get("price", {})
+                raw=int(price_data["price"]); expo=int(price_data["expo"]); publish=int(price_data["publish_time"])
+                price=raw*(10**expo)
+                if price <= 0 or publish <= 0: raise ValueError("invalid_provider_observation")
+                conf_raw=price_data.get("conf"); confidence=int(conf_raw)*(10**expo) if conf_raw is not None else None
+                tick=PriceTick(symbol=symbol, venue="pyth", price=price, confidence=confidence, ts=datetime.fromtimestamp(publish,tz=timezone.utc))
+                self._store_tick(tick,run_context); ticks.append(tick)
+                if run_context: run_context.record_received(1); run_context.set_provider_timestamp(tick.ts)
+            except (KeyError,TypeError,ValueError,OverflowError):
+                logger.warning("Skipping malformed Pyth observation for %s", symbol)
+        if run_context:
+            (run_context.mark_success() if ticks else run_context.mark_failure(ValueError("provider_empty_response")))
+        return ticks
 
-    def _store_tick(self, tick: PriceTick, run_context=None) -> None:
-        payload = tick.model_dump(mode="json")
-        native_key = f"price:{tick.venue}:{tick.symbol}"
-        canonical_key = price_snapshot_key(tick.venue, tick.symbol)
-        self.state_store.set_snapshot(native_key, payload, ttl=120)
-        if canonical_key != native_key:
-            self.state_store.set_snapshot(canonical_key, payload, ttl=120)
-        row = self.market_repo.save_tick(
-            symbol=tick.symbol,
-            venue=tick.venue,
-            price=tick.price,
-            confidence=tick.confidence,
-            ts=tick.ts,
-            ingest_run_id=getattr(run_context, "run_id", None), source_id="pyth_sol_usd", provenance=run_context,
-        )
+    async def fetch_price(self, price_feed_id=SOL_USD_FEED_ID, run_context=None):
+        ticks=await self.fetch_prices(run_context=run_context)
+        symbol=next((s for s,f in PRICE_FEEDS.items() if f==price_feed_id),"SOL/USD")
+        return next((t for t in ticks if t.symbol==symbol),None)
+
+    def _store_tick(self,tick,run_context=None):
+        payload=tick.model_dump(mode="json")
+        for key in reversed(price_snapshot_candidates(tick.venue,tick.symbol)):
+            self.state_store.set_snapshot(key,payload,ttl=120)
+        row=self.market_repo.save_tick(symbol=tick.symbol,venue=tick.venue,price=tick.price,confidence=tick.confidence,ts=tick.ts,ingest_run_id=getattr(run_context,"run_id",None),source_id="pyth_sol_usd",provenance=run_context)
         if run_context and row: run_context.record_persisted(1)

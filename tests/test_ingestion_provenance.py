@@ -58,8 +58,8 @@ def test_wits_registry_uses_canonical_aggregate_freshness_key():
 def test_hyperliquid_feed_health_compatibility_is_preserved():
     source = SOURCE_REGISTRY["hyperliquid_sol_usd"]
     assert source["provider"] == "Hyperliquid"
-    assert source["snapshot_key"] == "price:hyperliquid:SOL/USD"
-    assert source["storage_target"] == "redis_snapshot"
+    assert source["snapshot_key"] == "market:hyperliquid:SOL_PERP"
+    assert source["storage_target"] == "market_ticks+redis_snapshot"
     health = _source("backend/api/health_routes.py")
     assert "for s in list_sources()" in health
 

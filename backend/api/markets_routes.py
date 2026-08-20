@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from backend.core.schemas import MarketDataResponse
 from backend.core.timeutils import window_to_seconds
-from backend.core.state_keys import PRICE_INTEGRITY, PRICE_INTEGRITY_LEGACY_LATEST, price_snapshot_candidates
+from backend.core.state_keys import PRICE_INTEGRITY, PRICE_INTEGRITY_LEGACY_LATEST, price_integrity_key, price_snapshot_candidates
 from backend.core.state_store import StateStore
 from backend.core.price_authority import PriceAuthority
 from backend.core.price_validator import PriceValidator
@@ -106,12 +106,15 @@ def get_funding():
 
 
 @router.get("/integrity")
-def get_integrity():
+def get_integrity(symbol: str = Query(default="SOL/USD")):
+    symbol = symbol.upper().replace("-PERP", "/USD")
+    if symbol not in {"BTC/USD", "ETH/USD", "SOL/USD"}:
+        raise HTTPException(status_code=422, detail="Supported integrity symbols: BTC/USD, ETH/USD, SOL/USD")
     prices = {}
     feed_ts = {}
     for venue in ["pyth", "kraken", "coingecko", "yfinance"]:
         snap = None
-        for key in price_snapshot_candidates(venue, "SOL/USD"):
+        for key in price_snapshot_candidates(venue, symbol):
             snap = _store.get_snapshot(key)
             if snap:
                 break
@@ -120,6 +123,9 @@ def get_integrity():
             feed_ts[venue] = snap.get("ts", datetime.now(timezone.utc).isoformat())
 
     result = _validator.validate(prices, feed_timestamps=feed_ts)
-    _store.set_snapshot(PRICE_INTEGRITY, result, ttl=60)
-    _store.set_snapshot(PRICE_INTEGRITY_LEGACY_LATEST, result, ttl=60)
+    result["symbol"] = symbol
+    _store.set_snapshot(price_integrity_key(symbol), result, ttl=60)
+    if symbol == "SOL/USD":
+        _store.set_snapshot(PRICE_INTEGRITY, result, ttl=60)
+        _store.set_snapshot(PRICE_INTEGRITY_LEGACY_LATEST, result, ttl=60)
     return result

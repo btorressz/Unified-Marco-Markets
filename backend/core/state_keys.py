@@ -60,7 +60,11 @@ def price_snapshot_candidates(venue: str, symbol: str) -> tuple[str, ...]:
     return tuple(keys)
 
 
-PRICE_INTEGRITY = "price:integrity"
+def price_integrity_key(symbol: str) -> str:
+    return f"price:integrity:{normalize_price_symbol(symbol)}"
+
+
+PRICE_INTEGRITY = "price:integrity"  # legacy SOL/USD alias
 PRICE_INTEGRITY_LEGACY_LATEST = "price:integrity:latest"
 
 WITS_AGGREGATE = "wits:tariff:aggregate"

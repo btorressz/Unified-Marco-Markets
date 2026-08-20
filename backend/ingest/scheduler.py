@@ -16,6 +16,7 @@ from backend.ingest.kraken_ingest import KrakenIngestor
 from backend.ingest.coingecko_ingest import CoinGeckoIngestor
 from backend.ingest.pyth_ingest import PythIngestor
 from backend.ingest.drift_ingest import DriftIngestor
+from backend.ingest.hyperliquid_ingest import HyperliquidMarketIngestor
 from backend.ingest.yfinance_ingest import YFinanceHistoryIngestor, YFinanceIngestor
 from backend.data.repositories.ingest_repo import IngestRepository
 from backend.ingest.provenance import IngestRunContext
@@ -41,6 +42,7 @@ class IngestScheduler:
         self.coingecko = CoinGeckoIngestor(state_store=self.state_store)
         self.pyth = PythIngestor(state_store=self.state_store)
         self.drift = DriftIngestor(state_store=self.state_store)
+        self.hyperliquid_market = HyperliquidMarketIngestor(state_store=self.state_store)
         self.yfinance = YFinanceIngestor(state_store=self.state_store)
         self.yfinance_history = YFinanceHistoryIngestor()
 
@@ -67,6 +69,7 @@ class IngestScheduler:
             self._run_pyth, "interval", seconds=30, id="pyth_ingest",
             name="Pyth Price Ingest", replace_existing=True,
         )
+        self.scheduler.add_job(self._run_hyperliquid_market, "interval", seconds=60, id="hyperliquid_market_ingest", name="Hyperliquid Perp Context", replace_existing=True)
         self.scheduler.add_job(
             self._run_drift, "interval", seconds=60, id="drift_ingest",
             name="Drift Market Ingest", replace_existing=True,
@@ -175,7 +178,7 @@ class IngestScheduler:
 
     async def _run_kraken(self) -> None:
         try:
-            ran = await self._run_source("kraken_sol_usd", "kraken", lambda context: self.kraken.fetch_ticker(run_context=context))
+            ran = await self._run_source("kraken_sol_usd", "kraken", lambda context: self.kraken.fetch_tickers(run_context=context))
             if ran:
                 logger.debug("Kraken ingest completed")
         except Exception:
@@ -183,7 +186,7 @@ class IngestScheduler:
 
     async def _run_coingecko(self) -> None:
         try:
-            ran = await self._run_source("coingecko_sol_usd", "coingecko", lambda context: self.coingecko.fetch_price(run_context=context))
+            ran = await self._run_source("coingecko_sol_usd", "coingecko", lambda context: self.coingecko.fetch_prices(run_context=context))
             if ran:
                 logger.debug("CoinGecko ingest completed")
         except Exception:
@@ -191,11 +194,17 @@ class IngestScheduler:
 
     async def _run_pyth(self) -> None:
         try:
-            ran = await self._run_source("pyth_sol_usd", "pyth", lambda context: self.pyth.fetch_price(run_context=context))
+            ran = await self._run_source("pyth_sol_usd", "pyth", lambda context: self.pyth.fetch_prices(run_context=context))
             if ran:
                 logger.debug("Pyth ingest completed")
         except Exception:
             logger.error("Pyth ingest job failed", exc_info=True)
+
+    async def _run_hyperliquid_market(self) -> None:
+        try:
+            await self._run_source("hyperliquid_sol_usd", "hyperliquid-market", lambda context: self.hyperliquid_market.fetch_market_context(run_context=context))
+        except Exception:
+            logger.error("Hyperliquid market ingest job failed", exc_info=True)
 
     async def _run_drift(self) -> None:
         try:
