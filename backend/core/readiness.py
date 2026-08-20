@@ -121,7 +121,10 @@ def _ingestion_check() -> dict[str, Any]:
     sources = []
     degraded = False
     for source in list_sources():
-        snap = store.get_snapshot(source["snapshot_key"])
+        snapshot_key = source.get("snapshot_key")
+        if not snapshot_key:
+            continue
+        snap = store.get_snapshot(snapshot_key)
         ts_raw = (snap or {}).get("ts") if isinstance(snap, dict) else None
         ts = _parse_ts(ts_raw)
         age = max(0.0, (now - ts).total_seconds()) if ts is not None else None

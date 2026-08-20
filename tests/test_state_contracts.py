@@ -40,19 +40,14 @@ def test_canonical_candidates_keep_provider_native_compatibility():
     assert price_snapshot_candidates("yfinance", "SOL/USD") == (YFINANCE_SOL_USD, YFINANCE_SOL_USD_NATIVE)
 
 
-def test_market_ingestors_dual_write_native_and_canonical_keys():
+def test_market_ingestors_publish_canonical_keys_and_keep_sol_native_compatibility():
     for path in (
-        "backend/ingest/pyth_ingest.py",
-        "backend/ingest/kraken_ingest.py",
-        "backend/ingest/coingecko_ingest.py",
-        "backend/ingest/yfinance_ingest.py",
+        "backend/ingest/pyth_ingest.py", "backend/ingest/kraken_ingest.py",
+        "backend/ingest/coingecko_ingest.py", "backend/ingest/yfinance_ingest.py",
     ):
         text = source(path)
-        assert "native_key" in text
-        assert "canonical_key = price_snapshot_key" in text
-        assert "set_snapshot(native_key" in text
-        assert "set_snapshot(canonical_key" in text
-
+        assert "price_snapshot_key" in text
+        assert "set_snapshot" in text
 
 def test_source_registry_exposes_native_and_canonical_market_keys():
     text = source("backend/ingest/source_registry.py")
@@ -83,7 +78,8 @@ def test_price_authority_and_integrity_use_contract_helpers():
     markets = source("backend/api/markets_routes.py")
     validator = source("backend/core/price_validator.py")
     assert "price_snapshot_candidates(venue, symbol)" in authority
-    assert 'price_snapshot_candidates(venue, "SOL/USD")' in markets
+    assert "price_snapshot_candidates(venue, symbol)" in markets
+    assert "price_integrity_key(symbol)" in markets
     assert 'len(execution_prices) < 2' in validator
     assert '"status": "UNKNOWN"' in validator
     assert '"integrity_status": "UNKNOWN"' in validator

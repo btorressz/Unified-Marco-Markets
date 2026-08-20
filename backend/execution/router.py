@@ -16,6 +16,7 @@ from backend.config import (
 )
 from backend.core.event_bus import EventBus, EventType
 from backend.core.state_store import StateStore
+from backend.core.state_keys import price_integrity_key
 from backend.core.price_authority import PriceAuthority
 from backend.compute.risk_engine import RiskEngine
 from backend.compute.execution_decision import combine_execution_decision, evaluate_data_guardrails
@@ -65,10 +66,10 @@ class ExecutionRouter:
     def _get_live_price(self, market: str) -> dict:
         symbol = _symbol_from_market(market); result = self._price_authority.get_price(symbol); now = datetime.now(timezone.utc)
         if not result.found or result.price <= 0:
-            return {"price": 0.0, "source": "none", "ts": now.isoformat(), "age_s": 0, "fresh": False, "found": False}
+            return {"price": 0.0, "source": "none", "ts": now.isoformat(), "age_s": 0, "fresh": False, "found": False, "integrity_symbol": symbol}
         age_s = (now - result.ts).total_seconds()
         return {"price": result.price, "source": result.source, "ts": result.ts.isoformat(), "age_s": round(age_s, 1),
-                "fresh": age_s <= PRICE_FRESHNESS_THRESHOLD_S, "found": True}
+                "fresh": age_s <= PRICE_FRESHNESS_THRESHOLD_S, "found": True, "integrity_symbol": symbol}
 
     def _get_data_context(self, live_price: dict | None = None, order_context: dict | None = None) -> dict:
         ctx = {"execution_mode": self.mode}; now = datetime.now(timezone.utc)
@@ -91,8 +92,8 @@ class ExecutionRouter:
                 except Exception: pass
             else:
                 ctx["price_ts"] = now.isoformat(); ctx["price_source"] = "none"
-        integrity = self._store.get_snapshot("price:integrity")
-        ctx["integrity_status"] = integrity.get("status", "OK") if integrity else "OK"
+        integrity = self._store.get_snapshot(price_integrity_key((live_price or {}).get("integrity_symbol", "SOL/USD")))
+        ctx["integrity_status"] = integrity.get("status", "UNKNOWN") if integrity else "UNKNOWN"
         return ctx
 
     def _get_market_state(self) -> dict:

@@ -14,7 +14,7 @@ from backend.compute.conflict_escalation import score_conflicts, conflict_market
 from backend.compute.shipping_energy_risk import score_chokepoints, score_energy_shock, supply_chain_impact
 from backend.compute.geopolitical_market_impact import estimate_market_impact
 from backend.compute.geopolitical_event_study import (ASSET_BUCKETS, HORIZONS, MAX_EVENTS, MAX_SYMBOLS,
-    MAX_REFERENCE_AGE_SECONDS, MAX_TARGET_LAG_SECONDS, compute_event_study, normalize_study_event)
+    MAX_REFERENCE_AGE_SECONDS, MAX_TARGET_LAG_SECONDS, analyze_symbol, compute_event_study, normalize_study_event)
 from backend.compute.portfolio_protection import scenario_protection
 from backend.ingest.quality import is_observed_snapshot
 from backend.ingest.yfinance_ingest import fetch_market_history
@@ -107,7 +107,11 @@ def reaction_lab_study(event_id: str):
     for symbol in ("BTC", "ETH", "SOL"):
         try: rows = _research_history.get_history(f"{symbol}/USD", INTERVAL_SECONDS, start_ts, end_ts, SOURCE_ID, 10000)
         except Exception: rows = []
-        if rows:
+        study = analyze_symbol(rows, event_ts)
+        matured = [row for row in study.values() if row.get("status") != "not_matured"]
+        # Local history is sufficient only when every matured horizon can be
+        # computed under the event-study's reference-age and target-lag rules.
+        if rows and all(row.get("status") == "available" for row in matured):
             histories[symbol] = rows
             history_metadata[symbol] = {"history_source": "durable_research_market_bars", "provider": "Yahoo Finance", "source_id": SOURCE_ID, "persisted": True}
             provider_status[symbol] = {"found": True, "synthetic": False, **history_metadata[symbol]}

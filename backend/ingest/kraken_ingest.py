@@ -1,79 +1,42 @@
 import logging
 from datetime import datetime, timezone
-
 import httpx
-
 from backend.core.models import PriceTick
-from backend.core.state_keys import price_snapshot_key
+from backend.core.state_keys import price_snapshot_candidates, price_snapshot_key
 from backend.core.state_store import StateStore
 from backend.data.repositories.market_repo import MarketRepository
-
-logger = logging.getLogger(__name__)
-
-KRAKEN_TICKER_URL = "https://api.kraken.com/0/public/Ticker"
-
-
+logger=logging.getLogger(__name__)
+KRAKEN_TICKER_URL="https://api.kraken.com/0/public/Ticker"
+KRAKEN_PAIRS={"XBTUSD":"BTC/USD","ETHUSD":"ETH/USD","SOLUSD":"SOL/USD"}
 class KrakenIngestor:
-
-    def __init__(
-        self,
-        state_store: StateStore | None = None,
-        market_repo: MarketRepository | None = None,
-    ):
-        self.state_store = state_store or StateStore()
-        self.market_repo = market_repo or MarketRepository()
-
-    async def fetch_ticker(self, pair: str = "SOLUSD", run_context=None) -> PriceTick | None:
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(KRAKEN_TICKER_URL, params={"pair": pair})
-                resp.raise_for_status()
-                data = resp.json()
-
-                errors = data.get("error", [])
-                if errors:
-                    if run_context: run_context.mark_failure(ValueError("provider_api_error"))
-                    logger.warning("Kraken API errors: %s", errors)
-                    return None
-
-                result = data.get("result", {})
-                if not result:
-                    if run_context: run_context.mark_failure(ValueError("provider_empty_response"))
-                    logger.warning("Kraken returned empty result for pair=%s", pair)
-                    return None
-
-                pair_key = next(iter(result))
-                ticker = result[pair_key]
-                last_price = float(ticker["c"][0])
-
-                tick = PriceTick(
-                    symbol=pair,
-                    venue="kraken",
-                    price=last_price,
-                    ts=datetime.now(timezone.utc),
-                )
-                if run_context: run_context.mark_success(); run_context.record_received(1)
-
-                self._store_tick(tick, run_context)
-                return tick
-        except Exception as exc:
-            if run_context: run_context.mark_failure(exc)
-            logger.warning("Kraken fetch failed for pair=%s", pair, exc_info=True)
-            return None
-
-    def _store_tick(self, tick: PriceTick, run_context=None) -> None:
-        payload = tick.model_dump(mode="json")
-        native_key = f"price:{tick.venue}:{tick.symbol}"
-        canonical_key = price_snapshot_key(tick.venue, tick.symbol)
-        self.state_store.set_snapshot(native_key, payload, ttl=120)
-        if canonical_key != native_key:
-            self.state_store.set_snapshot(canonical_key, payload, ttl=120)
-        row = self.market_repo.save_tick(
-            symbol=tick.symbol,
-            venue=tick.venue,
-            price=tick.price,
-            confidence=tick.confidence,
-            ts=tick.ts,
-            ingest_run_id=getattr(run_context, "run_id", None), source_id="kraken_sol_usd", provenance=run_context,
-        )
-        if run_context and row: run_context.record_persisted(1)
+ def __init__(self,state_store=None,market_repo=None): self.state_store=state_store or StateStore(); self.market_repo=market_repo or MarketRepository()
+ async def fetch_tickers(self,run_context=None):
+  retrieved=datetime.now(timezone.utc)
+  try:
+   async with httpx.AsyncClient(timeout=10.0) as client:
+    response=await client.get(KRAKEN_TICKER_URL,params={"pair":",".join(KRAKEN_PAIRS)}); response.raise_for_status(); data=response.json()
+   if data.get("error"): raise ValueError("provider_api_error")
+  except Exception as exc:
+   if run_context: run_context.mark_failure(exc)
+   logger.warning("Kraken current-price request failed",exc_info=True); return []
+  result=data.get("result",{}); ticks=[]
+  for requested,symbol in KRAKEN_PAIRS.items():
+   aliases=(requested,"XXBTZUSD" if requested=="XBTUSD" else f"X{requested[:3]}ZUSD")
+   row=next((result.get(k) for k in aliases if result.get(k)),None)
+   try:
+    price=float(row["c"][0])
+    if price<=0: raise ValueError
+   except (TypeError,KeyError,IndexError,ValueError):
+    logger.warning("Skipping malformed Kraken observation for %s",symbol); continue
+   tick=PriceTick(symbol=symbol,venue="kraken",price=price,ts=retrieved); self._store_tick(tick,run_context); ticks.append(tick)
+   if run_context: run_context.record_received(1)
+  if run_context: (run_context.mark_success() if ticks else run_context.mark_failure(ValueError("provider_empty_response")))
+  return ticks
+ async def fetch_ticker(self,pair="SOLUSD",run_context=None):
+  ticks=await self.fetch_tickers(run_context); symbol=KRAKEN_PAIRS.get(pair,pair)
+  return next((t for t in ticks if t.symbol==symbol),None)
+ def _store_tick(self,tick,run_context=None):
+  payload={**tick.model_dump(mode="json"),"timestamp_semantics":"retrieved_at"}
+  for key in reversed(price_snapshot_candidates("kraken",tick.symbol)): self.state_store.set_snapshot(key,payload,ttl=120)
+  row=self.market_repo.save_tick(symbol=tick.symbol,venue=tick.venue,price=tick.price,confidence=tick.confidence,ts=tick.ts,ingest_run_id=getattr(run_context,"run_id",None),source_id="kraken_sol_usd",provenance=run_context)
+  if run_context and row: run_context.record_persisted(1)
