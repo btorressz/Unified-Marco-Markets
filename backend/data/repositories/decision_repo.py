@@ -63,3 +63,20 @@ class DecisionRepository:
         )
 
     list_decisions = list
+
+    def list_complete_bounded(self, *, decision_type="execution_pre_trade_final", start_ts=None,
+                              end_ts=None, global_limit=5000) -> dict[str, Any]:
+        """Return an auditable statistical cohort, never pretending truncation is complete."""
+        safe_limit = max(1, min(int(global_limit), 5000))
+        clauses = ["decision_type=%s"]; params = [decision_type]
+        if start_ts is not None: clauses.append("decision_ts >= %s"); params.append(start_ts)
+        if end_ts is not None: clauses.append("decision_ts <= %s"); params.append(end_ts)
+        count = _db().execute_query(f"SELECT COUNT(*) AS count FROM decision_audit WHERE {' AND '.join(clauses)}", tuple(params))
+        candidate = int(count[0]["count"]) if count else 0
+        rows = _db().execute_query(
+            f"SELECT * FROM decision_audit WHERE {' AND '.join(clauses)} ORDER BY decision_ts ASC,id ASC LIMIT %s",
+            tuple(params+[safe_limit]))
+        return {"decisions": rows, "candidate_decision_count": candidate,
+                "included_decision_count": len(rows), "truncated": candidate > len(rows),
+                "truncation_reason": "safe_global_bound" if candidate > len(rows) else None,
+                "global_limit": safe_limit}

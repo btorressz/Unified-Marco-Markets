@@ -28,10 +28,11 @@ class ResearchEventRepository:
         return rows[0] if rows else None
 
     def list_events(self, *, limit=100, event_family=None, event_type=None, source_id=None, claim_type=None,
-                    study_eligible=None, start_ts=None, end_ts=None):
+                    study_eligible=None, synthetic=None, event_time_basis=None, start_ts=None, end_ts=None):
         limit=max(1,min(int(limit),MAX_LIST_LIMIT)); clauses=[]; params=[]
         for col,val,op in (("event_family",event_family,"="),("event_type",event_type,"="),("source_id",source_id,"="),
                            ("claim_type",claim_type,"="),("study_eligible",study_eligible,"="),
+                           ("synthetic",synthetic,"="),("event_time_basis",event_time_basis,"="),
                            ("event_timestamp",start_ts,">="),("event_timestamp",end_ts,"<=")):
             if val is not None: clauses.append(f"{col} {op} %s"); params.append(val)
         where=" WHERE "+" AND ".join(clauses) if clauses else ""

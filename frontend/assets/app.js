@@ -656,10 +656,11 @@ const App = (() => {
 
 
   async function refreshGeopolitics() {
-    const [index, events, reactionEvents, sanctions, conflicts, chokepoints, energy, impact, protection, agentSignals, dailyBrief, protectionBrief] = await Promise.allSettled([
+    const [index, events, reactionEvents, reactionStatistics, sanctions, conflicts, chokepoints, energy, impact, protection, agentSignals, dailyBrief, protectionBrief] = await Promise.allSettled([
       API.getGeopoliticalIndex(),
       API.getGeopoliticalEvents(),
       API.getGeopoliticalReactionEvents(),
+      API.getGeopoliticalReactionStatistics({limit: 100}),
       API.getGeopoliticalSanctions(),
       API.getGeopoliticalConflicts(),
       API.getGeopoliticalChokepoints(),
@@ -681,6 +682,7 @@ const App = (() => {
       events: events.status === 'fulfilled' ? events.value : null,
       reactionEvents: catalog,
       reactionStudy,
+      reactionStatistics: reactionStatistics.status === 'fulfilled' ? reactionStatistics.value : null,
       sanctions: sanctions.status === 'fulfilled' ? sanctions.value : null,
       conflicts: conflicts.status === 'fulfilled' ? conflicts.value : null,
       chokepoints: chokepoints.status === 'fulfilled' ? chokepoints.value : null,

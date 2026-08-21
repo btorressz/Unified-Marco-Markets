@@ -1221,6 +1221,9 @@ details { margin-top:8px; } details summary { cursor:pointer;color:var(--text-se
 .quality-meta{width:100%;line-height:1.45}.quality-link{color:var(--accent-blue);cursor:pointer;text-decoration:underline;background:none;border:0;padding:0;font:inherit}
 .provenance-record{padding:12px;margin-bottom:10px;border:1px solid var(--border-color);border-radius:6px}.provenance-record h3{margin:0;font-size:13px}.provenance-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:7px;margin-top:9px}.provenance-field{padding:6px;background:var(--bg-secondary);overflow-wrap:anywhere}.provenance-field label{display:block;color:var(--text-muted);font-size:9px;text-transform:uppercase}.lineage-flow{margin:8px 0;padding:8px;border-left:3px solid var(--accent-blue);font-size:11px;line-height:1.8}.limitations{margin-top:7px;padding:7px;border-left:3px solid var(--accent-yellow);font-size:11px;color:var(--text-secondary)}
 .reaction-lab { margin-top:16px; }
+.multi-event-validation { border-top:3px solid var(--accent-blue); }
+.reaction-study-controls { display:flex; flex-wrap:wrap; gap:16px; padding:12px 0; color:var(--text-muted); }
+.multi-event-validation details { margin-top:10px; padding:10px; border:1px solid var(--border); border-radius:6px; }
 .reaction-v2 { margin-top: 18px; }
 .reaction-v2 h3 { letter-spacing: .08em; font-size: 12px; }
 .reaction-v2 small { display:block; color:var(--text-muted); }

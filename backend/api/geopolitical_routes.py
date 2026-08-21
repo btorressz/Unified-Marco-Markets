@@ -26,12 +26,15 @@ from backend.agents.protection_agent import ProtectionAgent
 from backend.data.repositories.research_event_repo import ResearchEventRepository
 from backend.data.repositories.research_market_history_repo import INTERVAL_SECONDS, SOURCE_ID, ResearchMarketHistoryRepository
 from backend.services.event_reaction_service import EventReactionService
+from backend.services.multi_event_reaction_service import MultiEventReactionService
+from backend.data.repositories.decision_outcome_repo import DecisionOutcomeRepository
 
 router = APIRouter(prefix="/api/geopolitical", tags=["geopolitical"])
 _store = StateStore()
 _research_events = ResearchEventRepository()
 _research_history = ResearchMarketHistoryRepository()
 _reaction_v2 = EventReactionService()
+_reaction_statistics = MultiEventReactionService(outcomes=DecisionOutcomeRepository())
 
 
 def _state() -> dict[str, Any]:
@@ -133,6 +136,19 @@ def reaction_lab_study(event_id: str):
             provider_status[symbol] = {"found": bool(histories[symbol]), "synthetic": result.get("synthetic", False), "error": result.get("error"), **history_metadata[symbol]}
     v1 = compute_event_study(event, histories, history_metadata=history_metadata)
     return {**v1, "provider_status": provider_status, "unique_symbol_count": len(symbols), **_reaction_v2.build(event)}
+
+
+@router.get("/reaction-lab/statistics")
+def reaction_lab_statistics(event_family: str|None=None, event_type: str|None=None, source: str|None=None,
+                            claim_type: str|None=None, event_time_basis: str|None=None,
+                            start_ts: str|None=None, end_ts: str|None=None, limit: int=100,
+                            overlap_policy: str="same_series_nonoverlap_v1", include_decisions: bool=True):
+    """Recompute a bounded local study; this GET performs no ingestion or writes."""
+    if overlap_policy != "same_series_nonoverlap_v1":
+        raise HTTPException(status_code=422, detail="Unsupported overlap policy")
+    return _reaction_statistics.build(event_family=event_family, event_type=event_type, source_id=source,
+        claim_type=claim_type, event_time_basis=event_time_basis, start_ts=start_ts, end_ts=end_ts,
+        limit=limit, overlap_policy=overlap_policy, include_decisions=include_decisions)
 
 
 @router.get("/sanctions")
