@@ -1512,10 +1512,23 @@ const UI = (() => {
     return `<div class="quality-strip">${badges}</div>${evidenceDetail(item)}`;
   }
 
+  function renderMultiEventReactionStatistics(data) {
+    const panel=document.getElementById('geo-reaction-statistics-panel'); if(!panel)return;
+    if(!data){panel.innerHTML='<div class="card-header"><span class="card-title">MULTI-EVENT STATISTICAL VALIDATION</span></div><div class="empty-state-text">UNAVAILABLE — durable study observations are required.</div>';return;}
+    const sample=data.sample||{}, horizons=['1h','4h','24h','7d'];
+    const quality=n=>n===0?'UNAVAILABLE':n<5?'VERY LOW SAMPLE':n<20?'LOW SAMPLE':n<50?'MODERATE SAMPLE':'ESTABLISHED SAMPLE';
+    const cell=row=>{if(!row||row.median==null)return '<td><strong>--</strong><small>UNAVAILABLE</small></td>';return `<td><strong>${(Number(row.median)*100).toFixed(2)}%</strong><small>n=${row.observed_n} / ${row.coverage_denominator_n} · ${row.coverage_rate==null?'--':(row.coverage_rate*100).toFixed(0)+'%'}</small><span class="quality-badge research">${quality(row.observed_n)}</span></td>`};
+    const price=['BTC','ETH','SOL'].map(asset=>`<tr><td><strong>${asset}</strong></td>${horizons.map(h=>cell(((data.price_statistics||{})[asset]||{})[h])).join('')}</tr>`).join('');
+    const scalar=(title,series)=>`<details><summary>${title}</summary><div class="table-scroll"><table><thead><tr><th>Series</th>${horizons.map(h=>`<th>${h.toUpperCase()}</th>`).join('')}</tr></thead><tbody>${Object.entries(series||{}).map(([name,rows])=>`<tr><td>${escapeHtml(name)}</td>${horizons.map(h=>{const r=rows[h]||{};return `<td>${r.median==null?'--':Number(r.median).toFixed(3)+' bps'}<small>n=${r.observed_n||0} · coverage ${r.coverage_rate==null?'--':(r.coverage_rate*100).toFixed(0)+'%'}</small></td>`}).join('')}</tr>`).join('')}</tbody></table></div></details>`;
+    const contract=data.statistics_contract||{}, decision=data.decision_statistics||{};
+    panel.innerHTML=`<div class="card-header"><span class="card-title">MULTI-EVENT STATISTICAL VALIDATION</span></div><div class="reaction-warning"><strong>DESCRIPTIVE · NON-CAUSAL · RESEARCH ONLY</strong><br>Observed patterns after selected events do not establish causal effects.</div><div class="reaction-study-controls"><span><b>Sample</b> ${sample.included_event_count||0} included / ${sample.candidate_event_count||0} candidate</span><span>Time basis: ${escapeHtml(Object.keys(sample.event_time_basis_counts||{}).join(', ')||'--')}</span></div><section class="reaction-v2"><h3>PRICE REACTIONS · MEDIAN</h3><div class="table-scroll"><table class="reaction-matrix"><thead><tr><th>Asset</th>${horizons.map(h=>`<th>${h.toUpperCase()}</th>`).join('')}</tr></thead><tbody>${price}</tbody></table></div></section>${scalar('FUNDING REACTIONS · MEDIAN Δ BPS',data.funding_statistics)}${scalar('BASIS REACTIONS · MEDIAN Δ BPS',data.basis_statistics)}<details><summary>OBSERVED REGIME TRANSITIONS AFTER EVENTS · NOT CAUSAL</summary><pre>${escapeHtml(JSON.stringify(data.regime_statistics||{},null,2))}</pre></details><details><summary>EVENT-LINKED DECISION OUTCOMES</summary><p>Candidate ${decision.candidate_decision_count||0} · included ${decision.included_decision_count||0} · ${decision.truncated?'TRUNCATED':'COMPLETE WITHIN BOUND'}. BLOCK classifications are not realized P&amp;L.</p></details><details><summary>COVERAGE · SAMPLE ATTRITION · OVERLAP · MISSINGNESS</summary><pre>${escapeHtml(JSON.stringify({missingness:data.missingness,overlap:data.overlap},null,2))}</pre></details><details><summary>METHODOLOGY / LIMITATIONS</summary><p>Contract ${escapeHtml((data.study||{}).contract_version)} · overlap ${escapeHtml((data.overlap||{}).policy)} · bootstrap ${escapeHtml((contract.bootstrap||{}).method)} seed ${(contract.bootstrap||{}).seed}, ${(contract.bootstrap||{}).iterations} iterations · winsorization ${escapeHtml((contract.winsorization||{}).policy)}.</p><p>${escapeHtml(contract.warning||'')}</p><p>${(data.limitations||[]).map(escapeHtml).join('<br>')}</p></details>`;
+  }
+
   function renderGeopoliticsTab(data) {
     data = data || {};
     const idx = data.index || {};
     renderGeopoliticalReactionLab(data.reactionEvents, data.reactionStudy);
+    renderMultiEventReactionStatistics(data.reactionStatistics);
     const components = [
       ['Sanctions', idx.sanctions_score], ['Conflict', idx.conflict_score], ['Shipping', idx.shipping_score], ['Energy', idx.energy_score], ['Cyber/Policy', idx.cyber_policy_score], ['Tariff', idx.tariff_score], ['Market Stress', idx.market_stress_score],
     ];

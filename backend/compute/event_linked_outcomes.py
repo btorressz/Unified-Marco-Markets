@@ -39,9 +39,14 @@ def select_event_points(rows, event_ts, *, timestamp_field, value_field, now=Non
         if ts is not None and value is not None:
             valid.append((ts, value, row))
     valid.sort(key=lambda item: item[0])
+    first_timestamp = valid[0][0] if valid else None
+    latest_timestamp = valid[-1][0] if valid else None
     reference = next((item for item in reversed(valid) if item[0] <= event), None) if event else None
-    if reference and (event - reference[0]).total_seconds() > reference_max_age_seconds:
-        reference = None
+    reference_reason = None
+    if event and first_timestamp and event < first_timestamp: reference_reason = "event_predates_dataset"
+    elif reference and (event - reference[0]).total_seconds() > reference_max_age_seconds:
+        reference = None; reference_reason = "reference_stale"
+    elif reference is None: reference_reason = "no_valid_pre_event_reference"
     horizons = {}
     for label, seconds in HORIZONS.items():
         target = event.timestamp() + seconds if event else None
@@ -51,7 +56,7 @@ def select_event_points(rows, event_ts, *, timestamp_field, value_field, now=Non
         if target_dt and target_dt > current:
             horizons[label] = {**base, "status": "not_matured", "reason": "horizon_not_matured"}
         elif reference is None:
-            horizons[label] = {**base, "status": "unavailable", "reason": "no_valid_pre_event_reference"}
+            horizons[label] = {**base, "status": "unavailable", "reason": reference_reason}
         else:
             selected = next((item for item in valid if item[0] >= target_dt), None)
             if selected is None:
@@ -62,7 +67,9 @@ def select_event_points(rows, event_ts, *, timestamp_field, value_field, now=Non
                 horizons[label] = {**base, "status": "available", "reason": None,
                     "selected_observation_timestamp": selected[0].isoformat(),
                     "lag_seconds": (selected[0] - target_dt).total_seconds(), "value": selected[1], "row": selected[2]}
-    return {"reference": None if reference is None else {"timestamp": reference[0].isoformat(), "value": reference[1], "row": reference[2]}, "horizons": horizons}
+    return {"reference": None if reference is None else {"timestamp": reference[0].isoformat(), "value": reference[1], "row": reference[2]}, "horizons": horizons,
+            "coverage": {"first_timestamp": first_timestamp.isoformat() if first_timestamp else None,
+                         "latest_timestamp": latest_timestamp.isoformat() if latest_timestamp else None}}
 
 
 def funding_reactions(rows, event_ts, *, now=None):
@@ -71,7 +78,7 @@ def funding_reactions(rows, event_ts, *, now=None):
     timestamps = [_dt(r.get("provider_timestamp")) for r in rows]
     if timestamps and min(timestamps) > _dt(event_ts):
         for result in selected["horizons"].values():
-            if result.get("status") == "unavailable": result["reason"] = "event_predates_funding_coverage"
+            if result.get("status") == "unavailable": result["reason"] = "event_predates_dataset"
     ref = selected["reference"]
     for result in selected["horizons"].values():
         result.update({"research_only": True, "execution_eligible": False})
@@ -94,7 +101,7 @@ def basis_reactions(rows, event_ts, *, now=None):
     timestamps = [_dt(r.get("observed_at")) for r in (rows or []) if _dt(r.get("observed_at"))]
     if timestamps and min(timestamps) > _dt(event_ts):
         for result in selected["horizons"].values():
-            if result.get("status") == "unavailable": result["reason"] = "event_predates_basis_coverage"
+            if result.get("status") == "unavailable": result["reason"] = "event_predates_dataset"
     ref = selected["reference"]
     for result in selected["horizons"].values():
         result.update({"research_only": True, "execution_eligible": False})
