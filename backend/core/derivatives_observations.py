@@ -66,6 +66,39 @@ class FundingObservation(BaseModel):
             metadata=metadata or {},
         )
 
+    @classmethod
+    def asymmetric(
+        cls, *, source_id: str, venue: str, market: str, rate_kind: str,
+        raw_long_rate: float, raw_short_rate: float,
+        long_cashflow_rate: float, short_cashflow_rate: float,
+        interval_seconds: int, provider_timestamp: datetime | None,
+        timestamp_semantics: str, sign_convention: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> "FundingObservation":
+        """Build a side-specific observation without inventing a scalar rate.
+
+        ``annualized_rate`` and ``normalized_funding_rate`` intentionally remain
+        null: neither side is a faithful compatibility scalar when caps make the
+        cashflows asymmetric.  Annualized side values are retained in metadata.
+        """
+        return cls(
+            source_id=source_id, venue=venue, market=market, rate_kind=rate_kind,
+            interval_seconds=interval_seconds,
+            long_cashflow_rate=long_cashflow_rate,
+            short_cashflow_rate=short_cashflow_rate,
+            provider_timestamp=provider_timestamp,
+            timestamp_semantics=timestamp_semantics,
+            sign_convention=sign_convention,
+            metadata={
+                **(metadata or {}),
+                "raw_long_rate": raw_long_rate,
+                "raw_short_rate": raw_short_rate,
+                "annualized_long_cashflow": annualize_rate(long_cashflow_rate, interval_seconds),
+                "annualized_short_cashflow": annualize_rate(short_cashflow_rate, interval_seconds),
+                "compatibility_scalar": None,
+            },
+        )
+
 
 def unavailable_funding(reason: str, **metadata: Any) -> dict[str, Any]:
     return {"available": False, "reason": reason, "metadata": metadata}

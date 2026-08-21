@@ -23,6 +23,7 @@ from backend.ingest.yfinance_ingest import YFinanceHistoryIngestor, YFinanceInge
 from backend.data.repositories.ingest_repo import IngestRepository
 from backend.ingest.provenance import IngestRunContext
 from backend.ingest.source_registry import get_source
+from backend.compute.basis_materializer import BasisMaterializer
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class IngestScheduler:
         self.yfinance = YFinanceIngestor(state_store=self.state_store)
         self.yfinance_history = YFinanceHistoryIngestor()
         self.price_validator = PriceValidator(state_store=self.state_store)
+        self.basis_materializer = BasisMaterializer(state_store=self.state_store)
 
     def schedule_all(self) -> None:
         self.scheduler.add_job(self._run_wits, "interval", hours=6, id="wits_ingest", name="WITS Tariff Ingest", replace_existing=True)
@@ -62,6 +64,7 @@ class IngestScheduler:
         self.scheduler.add_job(self._run_hyperliquid_market, "interval", seconds=60, id="hyperliquid_market_ingest", name="Hyperliquid Perp Context", replace_existing=True)
         self.scheduler.add_job(self._run_hyperliquid_funding_history, "interval", hours=1, id="hyperliquid_funding_history_ingest", name="Hyperliquid Funding History", replace_existing=True)
         self.scheduler.add_job(self._run_drift, "interval", seconds=60, id="drift_ingest", name="Drift Market Ingest", replace_existing=True)
+        self.scheduler.add_job(self._run_basis_materializer, "interval", seconds=60, id="basis_materializer", name="Derivatives Basis Materializer", replace_existing=True)
         self.scheduler.add_job(self._run_yfinance_crypto, "interval", seconds=60, id="yfinance_crypto_ingest", name="Yahoo Finance Crypto Research Fallback", replace_existing=True)
         self.scheduler.add_job(self._run_yfinance_crypto_history, "interval", hours=1, id="yfinance_crypto_history_ingest", name="Yahoo Finance Crypto Research History", replace_existing=True)
 
@@ -214,6 +217,13 @@ class IngestScheduler:
                 logger.debug("Yahoo Finance crypto research ingest completed")
         except Exception:
             logger.error("Yahoo Finance crypto research ingest job failed", exc_info=True)
+
+    async def _run_basis_materializer(self) -> None:
+        try:
+            await self._run_source("basis_materializer_v1", "basis-materializer",
+                lambda context: self.basis_materializer.materialize(run_context=context))
+        except Exception:
+            logger.error("Basis materialization job failed", exc_info=True)
 
     async def _run_yfinance_crypto_history(self) -> None:
         try:
