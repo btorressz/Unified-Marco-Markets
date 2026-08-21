@@ -63,3 +63,34 @@ def test_basis_missing_stale_and_skew_are_unavailable():
         perp_price=101, perp_ts=now, now=now)
     assert stale["available"] is False
     assert "timestamp_skew_exceeded" in stale["reasons"]
+
+
+def test_different_intervals_choose_annualized_side_cashflows():
+    now = datetime.now(timezone.utc)
+    hourly = observation("hyperliquid", .0001, now, interval=3600)
+    eight_hour = observation("drift", .0002, now, interval=28800)
+    result = FundingArbDetector().detect_arb(hourly, eight_hour, now=now)
+    assert result["direction"] == "short_hl_long_drift"
+    assert result["raw_period_spread_bps"] is None
+    assert result["spread_semantics"] == "annualized_short_cashflow_rate_spread_bps"
+
+
+def test_asymmetric_observation_preserves_both_sides_without_scalar():
+    now = datetime.now(timezone.utc)
+    obs = FundingObservation.asymmetric(source_id="fixture", venue="drift", market="SOL-PERP",
+        rate_kind="current", raw_long_rate=2, raw_short_rate=-1,
+        long_cashflow_rate=-.0002, short_cashflow_rate=.0001, interval_seconds=3600,
+        provider_timestamp=now, timestamp_semantics="provider_timestamp",
+        sign_convention="side_cashflows_are_account_cashflows")
+    assert obs.normalized_funding_rate is None
+    assert obs.long_cashflow_rate == -.0002
+    assert obs.short_cashflow_rate == .0001
+
+
+def test_materially_future_basis_leg_is_unavailable():
+    now = datetime.now(timezone.utc)
+    result = compute_basis_observation(symbol="BTC/USD", venue="hyperliquid", market="BTC-PERP",
+        spot_source="pyth", spot_price=100, spot_ts=now + timedelta(minutes=2),
+        perp_price=101, perp_ts=now, now=now)
+    assert result["available"] is False
+    assert "future_leg" in result["reasons"]

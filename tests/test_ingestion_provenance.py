@@ -27,6 +27,7 @@ def test_registry_has_stable_source_contracts():
         "gdelt_macro_news",
         "ofac_sanctions",
         "wto_trade",
+        "basis_materializer_v1",
     }
     assert expected == set(SOURCE_REGISTRY)
     assert SOURCE_REGISTRY["pyth_sol_usd"]["fallback_chain"] == ["kraken_sol_usd", "coingecko_sol_usd", "yfinance_crypto_research"]

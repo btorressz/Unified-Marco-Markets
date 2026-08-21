@@ -25,6 +25,18 @@ _validator = PriceValidator(state_store=_store)
 _price_authority = PriceAuthority(state_store=_store)
 _research_history = ResearchMarketHistoryRepository()
 _derivatives = DerivativesRepository()
+_FUNDING_VENUES = {"hyperliquid", "drift"}
+_FUNDING_MARKETS = {"BTC-PERP", "ETH-PERP", "SOL-PERP"}
+_RATE_KINDS = {"current", "realized"}
+
+
+def _validate_funding(venue=None, market=None, rate_kind=None):
+    if venue is not None and venue not in _FUNDING_VENUES:
+        raise HTTPException(status_code=422, detail="Unsupported funding venue")
+    if market is not None and market not in _FUNDING_MARKETS:
+        raise HTTPException(status_code=422, detail="Unsupported funding market")
+    if rate_kind is not None and rate_kind not in _RATE_KINDS:
+        raise HTTPException(status_code=422, detail="rate_kind must be current or realized")
 
 
 @router.get("/latest", response_model=list[MarketDataResponse])
@@ -97,9 +109,12 @@ def get_research_history(symbol: str, start_ts: datetime, end_ts: datetime,
 
 
 @router.get("/funding")
-def get_funding(venue: str | None = None, market: str | None = None):
+def get_funding(venue: str | None = None, market: str | None = None,
+                rate_kind: str = "current", source_id: str | None = None):
     try:
-        rows = _derivatives.funding_history(venue=venue, market=market, limit=50)
+        _validate_funding(venue, market, rate_kind)
+        rows = _derivatives.funding_history(venue=venue, market=market, rate_kind=rate_kind,
+                                            source_id=source_id, limit=50)
         return {"funding_rates": rows, "count": len(rows), "contract_version": 1, "read_only": True}
     except Exception as exc:
         logger.error("Error fetching funding rates: %s", exc, exc_info=True)
@@ -109,14 +124,19 @@ def get_funding(venue: str | None = None, market: str | None = None):
 @router.get("/funding/history")
 def get_funding_history(venue: str | None = None, market: str | None = None,
                         start_ts: datetime | None = None, end_ts: datetime | None = None,
+                        rate_kind: str = "realized", source_id: str | None = None,
                         limit: int = Query(default=200, ge=1, le=1000)):
-    rows = _derivatives.funding_history(venue, market, start_ts, end_ts, limit)
+    _validate_funding(venue, market, rate_kind)
+    rows = _derivatives.funding_history(venue, market, start_ts, end_ts, limit,
+                                        rate_kind=rate_kind, source_id=source_id)
     return {"observations": rows, "count": len(rows), "read_only": True}
 
 
 @router.get("/funding/coverage")
-def get_funding_coverage(venue: str | None = None, market: str | None = None):
-    return {"coverage": _derivatives.funding_coverage(venue, market), "read_only": True}
+def get_funding_coverage(venue: str | None = None, market: str | None = None,
+                         rate_kind: str | None = None, source_id: str | None = None):
+    _validate_funding(venue, market, rate_kind)
+    return {"coverage": _derivatives.funding_coverage(venue, market, rate_kind, source_id), "read_only": True}
 
 
 @router.get("/integrity")

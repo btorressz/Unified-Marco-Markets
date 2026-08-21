@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 MAX_LEG_AGE_SECONDS = 180
 MAX_TIMESTAMP_SKEW_SECONDS = 120
+MAX_FUTURE_SKEW_SECONDS = 30
 
 
 def _dt(value):
@@ -31,9 +32,12 @@ def compute_basis_observation(*, symbol, venue, market, spot_source, spot_price,
                 "aligned": False, "fresh": False, "timestamp_skew_seconds": None}
     skew = abs((spot_dt-perp_dt).total_seconds())
     spot_age, perp_age = (now-spot_dt).total_seconds(), (now-perp_dt).total_seconds()
-    aligned, fresh = skew <= MAX_TIMESTAMP_SKEW_SECONDS, max(spot_age, perp_age) <= MAX_LEG_AGE_SECONDS
+    aligned = skew <= MAX_TIMESTAMP_SKEW_SECONDS
+    fresh = (max(spot_age, perp_age) <= MAX_LEG_AGE_SECONDS and
+             min(spot_age, perp_age) >= -MAX_FUTURE_SKEW_SECONDS)
     if not aligned: reasons.append("timestamp_skew_exceeded")
-    if not fresh: reasons.append("stale_leg")
+    if min(spot_age, perp_age) < -MAX_FUTURE_SKEW_SECONDS: reasons.append("future_leg")
+    elif not fresh: reasons.append("stale_leg")
     basis = ((perp_price-spot_price)/spot_price)*10_000 if not reasons else None
     return {**base, "available": not reasons, "reasons": reasons, "basis_bps": basis,
             "timestamp_skew_seconds": skew, "spot_age_seconds": spot_age,

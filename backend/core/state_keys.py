@@ -79,6 +79,10 @@ def perp_market_context_key(venue: str, market: str) -> str:
     return f"market:{str(venue).lower().strip()}:{normalize_perp_market(market)}"
 
 
+def basis_snapshot_key(venue: str, market: str) -> str:
+    return f"basis:{str(venue).lower().strip()}:{normalize_perp_market(market)}"
+
+
 def funding_snapshot_candidates(venue: str, market: str) -> tuple[str, ...]:
     canonical = funding_snapshot_key(venue, market)
     legacy = f"funding:{str(venue).lower().strip()}:{str(market).upper()}"

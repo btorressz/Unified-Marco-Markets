@@ -96,7 +96,12 @@ class HyperliquidMarketIngestor:
                     metadata={"provider_field": "funding", "realized": False},
                 )
                 self.state_store.set_snapshot(funding_snapshot_key("hyperliquid", market), funding.model_dump(mode="json"), ttl=120)
-                self.derivatives_repo.insert_funding(funding)
+                funding_row = self.derivatives_repo.insert_funding(
+                    funding, ingest_run_id=getattr(run_context, "run_id", None))
+                if run_context:
+                    run_context.metadata["funding_observations_received"] = run_context.metadata.get("funding_observations_received", 0) + 1
+                    run_context.metadata["funding_observations_persisted"] = run_context.metadata.get("funding_observations_persisted", 0) + (1 if funding_row else 0)
+                    run_context.record_persisted(1 if funding_row else 0)
             except (KeyError, TypeError, ValueError):
                 logger.warning("Hyperliquid current funding unavailable for %s", coin)
 
@@ -133,7 +138,8 @@ class HyperliquidMarketIngestor:
                             timestamp_semantics="provider_funding_settlement_time",
                             metadata={"provider_field": "fundingRate", "realized": True},
                         )
-                        if self.derivatives_repo.insert_funding(observation):
+                        if self.derivatives_repo.insert_funding(
+                                observation, ingest_run_id=getattr(run_context, "run_id", None)):
                             persisted.append(observation)
                     if run_context:
                         run_context.record_received(min(len(rows), HISTORY_BOOTSTRAP_HOURS))
@@ -143,5 +149,10 @@ class HyperliquidMarketIngestor:
                         run_context.metadata.setdefault("asset_failures", {})[coin] = str(exc)[:200]
         if run_context:
             run_context.record_persisted(len(persisted))
-            run_context.mark_success() if persisted else run_context.mark_failure(ValueError("provider_empty_response"))
+            # A valid empty response means the incremental database is current.
+            if run_context.metadata.get("asset_failures") and len(run_context.metadata["asset_failures"]) == len(COINS):
+                run_context.mark_failure(ValueError("all_provider_requests_failed"))
+            else:
+                run_context.metadata["no_new_data"] = not persisted
+                run_context.mark_success()
         return persisted

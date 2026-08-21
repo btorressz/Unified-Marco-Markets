@@ -5,7 +5,7 @@ import httpx
 
 from backend.core.models import PriceTick, FundingTick
 from backend.core.state_store import StateStore
-from backend.core.state_keys import funding_snapshot_key
+from backend.core.state_keys import funding_snapshot_key, perp_market_context_key
 from backend.data.repositories.market_repo import MarketRepository
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ class DriftIngestor:
         self.state_store = state_store or StateStore()
         self.market_repo = market_repo or MarketRepository()
 
-    async def fetch_market_data(self, market: str = "SOL-PERP", run_context=None) -> PriceTick | None:
+    async def fetch_market_data(self, market: str | None = None, run_context=None):
         url = f"{DRIFT_API_BASE}/markets"
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
@@ -35,25 +35,39 @@ class DriftIngestor:
                 if not isinstance(markets, list):
                     markets = [markets] if markets else []
 
+                wanted = {market} if market else {"BTC-PERP", "ETH-PERP", "SOL-PERP"}
+                ticks = []
                 for m in markets:
                     name = m.get("marketName", m.get("symbol", ""))
-                    if market.replace("-", "").upper() in name.replace("-", "").upper():
-                        price = float(m.get("markPrice", m.get("oraclePrice", m.get("price", 0))))
+                    matched = next((item for item in wanted if item.replace("-", "").upper() in name.replace("-", "").upper()), None)
+                    if matched:
+                        # A provider oracle is not a mark-price substitute.
+                        price = float(m.get("markPrice", 0))
                         if price <= 0:
                             continue
                         tick = PriceTick(
-                            symbol=market,
+                            symbol=matched,
                             venue="drift",
                             price=price,
                             ts=datetime.now(timezone.utc),
                         )
-                        if run_context: run_context.mark_success(); run_context.record_received(1)
+                        if run_context: run_context.record_received(1)
                         self._store_price(tick, run_context)
-                        return tick
+                        self.state_store.set_snapshot(perp_market_context_key("drift", matched), {
+                            "venue": "drift", "provider": "Velocity Protocol",
+                            "legacy_namespace": "Drift", "market": matched,
+                            "mark_price": price,
+                            "oracle_price": float(m["oraclePrice"]) if m.get("oraclePrice") is not None else None,
+                            "ts": tick.ts.isoformat(), "timestamp_semantics": "retrieved_at",
+                        }, ttl=120)
+                        ticks.append(tick)
 
-                logger.warning("Drift: market %s not found in response", market)
+                if ticks:
+                    if run_context: run_context.mark_success()
+                    return ticks[0] if market else ticks
+                logger.warning("Velocity/Drift: requested markets not found in response")
                 if run_context: run_context.mark_failure(ValueError("provider_empty_response"))
-                return None
+                return None if market else []
         except Exception as exc:
             if run_context: run_context.mark_failure(exc)
             logger.warning("Drift market data fetch failed for %s", market, exc_info=True)
