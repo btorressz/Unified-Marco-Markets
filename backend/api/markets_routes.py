@@ -116,6 +116,8 @@ def get_funding(venue: str | None = None, market: str | None = None,
         rows = _derivatives.funding_history(venue=venue, market=market, rate_kind=rate_kind,
                                             source_id=source_id, limit=50)
         return {"funding_rates": rows, "count": len(rows), "contract_version": 1, "read_only": True}
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Error fetching funding rates: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch funding rates")

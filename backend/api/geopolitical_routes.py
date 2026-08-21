@@ -25,11 +25,13 @@ from backend.agents.energy_shock_agent import EnergyShockAgent
 from backend.agents.protection_agent import ProtectionAgent
 from backend.data.repositories.research_event_repo import ResearchEventRepository
 from backend.data.repositories.research_market_history_repo import INTERVAL_SECONDS, SOURCE_ID, ResearchMarketHistoryRepository
+from backend.services.event_reaction_service import EventReactionService
 
 router = APIRouter(prefix="/api/geopolitical", tags=["geopolitical"])
 _store = StateStore()
 _research_events = ResearchEventRepository()
 _research_history = ResearchMarketHistoryRepository()
+_reaction_v2 = EventReactionService()
 
 
 def _state() -> dict[str, Any]:
@@ -129,7 +131,8 @@ def reaction_lab_study(event_id: str):
             histories[symbol] = list(result.get("history") or [])[:9000] if result.get("found") and result.get("synthetic") is False else []
             history_metadata[symbol] = {"history_source": "yahoo_on_demand", "provider": "Yahoo Finance", "source_id": "yfinance_crypto_research" if symbol in {"BTC","ETH","SOL"} else None, "persisted": False}
             provider_status[symbol] = {"found": bool(histories[symbol]), "synthetic": result.get("synthetic", False), "error": result.get("error"), **history_metadata[symbol]}
-    return {**compute_event_study(event, histories, history_metadata=history_metadata), "provider_status": provider_status, "unique_symbol_count": len(symbols)}
+    v1 = compute_event_study(event, histories, history_metadata=history_metadata)
+    return {**v1, "provider_status": provider_status, "unique_symbol_count": len(symbols), **_reaction_v2.build(event)}
 
 
 @router.get("/sanctions")
