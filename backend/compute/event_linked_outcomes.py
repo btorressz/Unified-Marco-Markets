@@ -1,0 +1,128 @@
+"""Pure single-event derivatives and regime outcome computation."""
+from __future__ import annotations
+
+import math
+from datetime import datetime, timezone
+from typing import Any
+
+HORIZONS = {"1h": 3600, "4h": 14400, "24h": 86400, "7d": 604800}
+REGIME_MAX_REFERENCE_AGE_SECONDS = 6 * 60 * 60
+
+
+def _dt(value: Any) -> datetime | None:
+    try:
+        value = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _number(value: Any) -> float | None:
+    try:
+        value = float(value)
+        return value if math.isfinite(value) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _sign(value: float | None) -> str | None:
+    return None if value is None else "POSITIVE" if value > 0 else "NEGATIVE" if value < 0 else "ZERO"
+
+
+def select_event_points(rows, event_ts, *, timestamp_field, value_field, now=None,
+                        reference_max_age_seconds=86400, target_lag_seconds=7200):
+    """Apply the no-look-ahead scalar observation contract to injected rows."""
+    event, current = _dt(event_ts), _dt(now) or datetime.now(timezone.utc)
+    valid = []
+    for row in rows or []:
+        ts, value = _dt(row.get(timestamp_field)), _number(row.get(value_field))
+        if ts is not None and value is not None:
+            valid.append((ts, value, row))
+    valid.sort(key=lambda item: item[0])
+    reference = next((item for item in reversed(valid) if item[0] <= event), None) if event else None
+    if reference and (event - reference[0]).total_seconds() > reference_max_age_seconds:
+        reference = None
+    horizons = {}
+    for label, seconds in HORIZONS.items():
+        target = event.timestamp() + seconds if event else None
+        target_dt = datetime.fromtimestamp(target, timezone.utc) if target is not None else None
+        base = {"target_timestamp": target_dt.isoformat() if target_dt else None,
+                "selected_observation_timestamp": None, "lag_seconds": None}
+        if target_dt and target_dt > current:
+            horizons[label] = {**base, "status": "not_matured", "reason": "horizon_not_matured"}
+        elif reference is None:
+            horizons[label] = {**base, "status": "unavailable", "reason": "no_valid_pre_event_reference"}
+        else:
+            selected = next((item for item in valid if item[0] >= target_dt), None)
+            if selected is None:
+                horizons[label] = {**base, "status": "unavailable", "reason": "history_not_yet_available"}
+            elif (selected[0] - target_dt).total_seconds() > target_lag_seconds:
+                horizons[label] = {**base, "status": "unavailable", "reason": "no_observation_within_target_tolerance"}
+            else:
+                horizons[label] = {**base, "status": "available", "reason": None,
+                    "selected_observation_timestamp": selected[0].isoformat(),
+                    "lag_seconds": (selected[0] - target_dt).total_seconds(), "value": selected[1], "row": selected[2]}
+    return {"reference": None if reference is None else {"timestamp": reference[0].isoformat(), "value": reference[1], "row": reference[2]}, "horizons": horizons}
+
+
+def funding_reactions(rows, event_ts, *, now=None):
+    rows = [r for r in (rows or []) if r.get("contract_version") == 1 and r.get("rate_kind") == "realized" and r.get("provider_timestamp")]
+    selected = select_event_points(rows, event_ts, timestamp_field="provider_timestamp", value_field="normalized_funding_rate", now=now)
+    timestamps = [_dt(r.get("provider_timestamp")) for r in rows]
+    if timestamps and min(timestamps) > _dt(event_ts):
+        for result in selected["horizons"].values():
+            if result.get("status") == "unavailable": result["reason"] = "event_predates_funding_coverage"
+    ref = selected["reference"]
+    for result in selected["horizons"].values():
+        result.update({"research_only": True, "execution_eligible": False})
+        if not ref or result["status"] != "available": continue
+        row, rr, value = result.pop("row"), ref["row"], result.pop("value")
+        delta = value - ref["value"]
+        result.update({"reference_timestamp": ref["timestamp"], "reference_normalized_rate": ref["value"],
+            "reference_rate_bps": ref["value"] * 10000, "reference_annualized_rate": _number(rr.get("annualized_rate")),
+            "normalized_rate": value, "rate_bps": value * 10000, "annualized_rate": _number(row.get("annualized_rate")),
+            "delta_rate": delta, "delta_bps": delta * 10000,
+            "annualized_delta": (_number(row.get("annualized_rate")) - _number(rr.get("annualized_rate"))) if _number(row.get("annualized_rate")) is not None and _number(rr.get("annualized_rate")) is not None else None,
+            "reference_sign": _sign(ref["value"]), "current_sign": _sign(value),
+            "sign_flip": ref["value"] * value < 0, "direction": "INCREASED" if delta > 0 else "DECREASED" if delta < 0 else "UNCHANGED",
+            **{k: row.get(k) for k in ("provider", "venue", "market", "source_id", "contract_version", "rate_kind", "interval_seconds", "timestamp_semantics", "sign_convention")}})
+    return selected
+
+
+def basis_reactions(rows, event_ts, *, now=None):
+    selected = select_event_points(rows, event_ts, timestamp_field="observed_at", value_field="basis_bps", now=now)
+    timestamps = [_dt(r.get("observed_at")) for r in (rows or []) if _dt(r.get("observed_at"))]
+    if timestamps and min(timestamps) > _dt(event_ts):
+        for result in selected["horizons"].values():
+            if result.get("status") == "unavailable": result["reason"] = "event_predates_basis_coverage"
+    ref = selected["reference"]
+    for result in selected["horizons"].values():
+        result.update({"research_only": True, "execution_eligible": False})
+        if not ref or result["status"] != "available": continue
+        row, value = result.pop("row"), result.pop("value")
+        result.update({"reference_timestamp": ref["timestamp"], "reference_basis_bps": ref["value"], "basis_bps": value,
+            "delta_bps": value-ref["value"], "reference_sign": _sign(ref["value"]), "basis_sign": _sign(value),
+            "sign_flip": ref["value"] * value < 0, "spot_source": row.get("spot_source"), "venue": row.get("venue"),
+            "market": row.get("market"), "reference_lineage": ref["row"].get("lineage"), "selected_lineage": row.get("lineage")})
+    return selected
+
+
+def regime_path(rows, event_ts, *, now=None, target_lag_seconds=7200):
+    selected = select_event_points(rows, event_ts, timestamp_field="ts", value_field="tariff_index", now=now,
+        reference_max_age_seconds=REGIME_MAX_REFERENCE_AGE_SECONDS, target_lag_seconds=target_lag_seconds)
+    ref = selected["reference"]
+    fields = ("shock_state", "funding_regime", "vol_regime", "tariff_index")
+    reference = None if not ref else {"status": "available", "snapshot_timestamp": ref["timestamp"], **{k: ref["row"].get(k) for k in fields}}
+    for result in selected["horizons"].values():
+        if result["status"] == "available":
+            row = result.pop("row"); result.pop("value")
+            result.update({"snapshot_timestamp": result["selected_observation_timestamp"], **{k: row.get(k) for k in fields},
+                "changed_fields": [k for k in fields if row.get(k) != ref["row"].get(k)], "semantics": "observed after event"})
+    return {"reference": reference, "horizons": selected["horizons"], "coverage": {"max_reference_age_seconds": REGIME_MAX_REFERENCE_AGE_SECONDS}}
+
+
+def event_lag_bucket(seconds):
+    if 0 <= seconds <= 3600: return "0_to_1h"
+    if seconds <= 14400: return "1h_to_4h"
+    if seconds <= 86400: return "4h_to_24h"
+    return "24h_to_7d"

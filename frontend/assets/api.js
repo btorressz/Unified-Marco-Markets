@@ -118,7 +118,6 @@ const API = (() => {
     getSolanaCongestion: () => fetchJSON('/api/solana/congestion'),
     getFundingArb: () => fetchJSON('/api/funding-arb/latest'),
     getBasisLatest: () => fetchJSON('/api/basis/latest'),
-    getBasisFeasibility: () => fetchJSON('/api/basis/feasibility'),
     getStableFlow: () => fetchJSON('/api/stable-flow/latest'),
     getAdaptiveWeights: () => fetchJSON('/api/rules/adaptive-weights'),
     getPortfolioProposal: (method = 'risk_parity') => fetchJSON(`/api/portfolio/proposal?method=${method}`),

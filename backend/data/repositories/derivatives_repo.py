@@ -132,3 +132,39 @@ class DerivativesRepository:
             WHERE (%s IS NULL OR symbol=%s) AND (%s IS NULL OR venue=%s)
             AND (%s IS NULL OR market=%s)
             GROUP BY symbol,venue,market ORDER BY symbol,venue""", (symbol,symbol,venue,venue,market,market))
+
+    def get_funding_event_points(self, *, venue, market, event_ts, horizon_targets,
+                                 reference_max_age_seconds=86400, target_lag_seconds=7200):
+        """Select one realized v1 reference and at most one row per target."""
+        return execute_query(
+            """(SELECT * FROM funding_ticks WHERE contract_version=1 AND rate_kind='realized'
+               AND venue=%s AND market=%s AND provider_timestamp IS NOT NULL
+               AND normalized_funding_rate IS NOT NULL AND provider_timestamp<=%s
+               AND provider_timestamp>=%s-(%s * interval '1 second')
+               ORDER BY provider_timestamp DESC,id DESC LIMIT 1)
+               UNION ALL
+               SELECT hit.* FROM unnest(%s::timestamptz[]) target
+               CROSS JOIN LATERAL (SELECT * FROM funding_ticks WHERE contract_version=1 AND rate_kind='realized'
+                   AND venue=%s AND market=%s AND provider_timestamp IS NOT NULL
+                   AND normalized_funding_rate IS NOT NULL AND provider_timestamp>=target
+                   AND provider_timestamp<=target+(%s * interval '1 second')
+                   ORDER BY provider_timestamp ASC,id ASC LIMIT 1) hit""",
+            (venue, market, event_ts, event_ts, reference_max_age_seconds, list(horizon_targets),
+             venue, market, target_lag_seconds))
+
+    def get_basis_event_points(self, *, symbol, venue, market, event_ts, horizon_targets,
+                               reference_max_age_seconds=86400, target_lag_seconds=7200):
+        """Select targeted durable basis points without loading minute history."""
+        return execute_query(
+            """(SELECT * FROM basis_observations WHERE symbol=%s AND venue=%s AND market=%s
+               AND basis_bps IS NOT NULL AND aligned=true AND fresh=true AND observed_at<=%s
+               AND observed_at>=%s-(%s * interval '1 second')
+               ORDER BY observed_at DESC,id DESC LIMIT 1)
+               UNION ALL
+               SELECT hit.* FROM unnest(%s::timestamptz[]) target
+               CROSS JOIN LATERAL (SELECT * FROM basis_observations WHERE symbol=%s AND venue=%s AND market=%s
+                   AND basis_bps IS NOT NULL AND aligned=true AND fresh=true AND observed_at>=target
+                   AND observed_at<=target+(%s * interval '1 second')
+                   ORDER BY observed_at ASC,id ASC LIMIT 1) hit""",
+            (symbol, venue, market, event_ts, event_ts, reference_max_age_seconds, list(horizon_targets),
+             symbol, venue, market, target_lag_seconds))
