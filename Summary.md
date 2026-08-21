@@ -8,7 +8,8 @@ It began as a system for answering a simple question — **“How could tariffs 
 
 Think of it as a command center that sits between **“what is happening in the world?”**, **“what is happening in markets?”**, and **“what would the desk do under these conditions?”**
 
-The project is still for research and development. Paper mode is the default. Intelligence, allocation, hedging, scenario, and counterfactual outputs are proposal/research tools rather than autonomous trading instructions.
+
+**NOTE** : The project is still for research and development. Paper mode is the default. Intelligence, allocation, hedging, scenario, and counterfactual outputs are proposal/research tools rather than autonomous trading instructions.
 
 ---
 
