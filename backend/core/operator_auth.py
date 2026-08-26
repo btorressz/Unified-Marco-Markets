@@ -2,44 +2,27 @@
 
 This is intentionally not an identity system. It provides one environment-backed
 bearer token for trusted operator actions while leaving read-only research routes
-unchanged. Secrets are never logged or returned.
+and explicitly classified calculation-only POSTs unchanged. Secrets are never
+logged or returned.
 """
 from __future__ import annotations
 
-import re
 import secrets
 from typing import Any
 
-from fastapi import HTTPException, Security, status
+from fastapi import HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from backend import config
+from backend.core.mutation_policy import (
+    MutationClass,
+    classify_mutation,
+    is_mutating_method,
+)
 
 _bearer = HTTPBearer(auto_error=False)
-
-# Exact external mutation surfaces. Read-only/calculation POSTs intentionally do
-# not appear here so the research dashboard remains usable without operator auth.
-_PROTECTED_EXACT: set[tuple[str, str]] = {
-    ("POST", "/api/execution/order"),
-    ("POST", "/api/execution/conditional-order"),
-    ("POST", "/api/execution/conditional-orders/evaluate"),
-    ("POST", "/api/execution/smart-order"),
-    ("POST", "/api/execution/jupiter/swap"),
-    ("POST", "/api/ml/train/offline"),
-    ("POST", "/api/decisions"),
-    ("POST", "/api/heuristics/evaluate"),
-    ("POST", "/api/backtest/run"),
-    ("POST", "/api/watchlists"),
-}
-
-_PROTECTED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("DELETE", re.compile(r"^/api/execution/conditional-order/[^/]+$")),
-    ("POST", re.compile(r"^/api/ml/models/[^/]+/(?:promote|rollback)$")),
-    ("PUT", re.compile(r"^/api/watchlists/[^/]+$")),
-    ("DELETE", re.compile(r"^/api/watchlists/[^/]+$")),
-)
 
 
 def operator_auth_required() -> bool:
@@ -52,15 +35,16 @@ def operator_auth_required() -> bool:
 
 
 def is_operator_mutation(method: str, path: str) -> bool:
-    method = str(method or "").upper()
-    path = str(path or "")
-    if (method, path) in _PROTECTED_EXACT:
-        return True
-    return any(method == expected and pattern.match(path) for expected, pattern in _PROTECTED_PATTERNS)
+    """Backward-compatible helper: true only for classified external mutations."""
+    return classify_mutation(method, path) == MutationClass.EXTERNAL_STATE_MUTATION
 
 
 def _auth_error(status_code: int, code: str, message: str) -> dict[str, Any]:
-    return {"status": "blocked" if status_code == 503 else "unauthorized", "code": code, "message": message}
+    return {
+        "status": "blocked" if status_code in {403, 503} else "unauthorized",
+        "code": code,
+        "message": message,
+    }
 
 
 def _authorize_token(raw_authorization: str | None) -> tuple[int, dict[str, Any]] | None:
@@ -78,10 +62,18 @@ def _authorize_token(raw_authorization: str | None) -> tuple[int, dict[str, Any]
     authorization = str(raw_authorization or "")
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
-        return 401, _auth_error(401, "operator_auth_required", "Operator bearer token required")
+        return 401, _auth_error(
+            401,
+            "operator_auth_required",
+            "Operator bearer token required",
+        )
 
     if not secrets.compare_digest(token, configured):
-        return 401, _auth_error(401, "operator_auth_invalid", "Invalid operator credentials")
+        return 401, _auth_error(
+            401,
+            "operator_auth_invalid",
+            "Invalid operator credentials",
+        )
     return None
 
 
@@ -98,23 +90,54 @@ def require_operator(
     raise HTTPException(status_code=status_code, detail=detail, headers=headers)
 
 
+def _blocked_unclassified_mutation(method: str, path: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=403,
+        content={
+            "detail": _auth_error(
+                403,
+                "unclassified_mutation",
+                f"Mutation route is not classified by the authorization policy: {method} {path}",
+            )
+        },
+    )
+
+
 async def enforce_operator_request(request: Request, call_next):
-    """HTTP boundary for the small set of state-changing operator surfaces."""
+    """Default-deny HTTP boundary for all state-capable request methods."""
     method = request.method.upper()
     path = request.url.path
 
-    if not is_operator_mutation(method, path):
+    if not is_mutating_method(method):
+        return await call_next(request)
+
+    classification = classify_mutation(method, path)
+    if classification is None:
+        # Runtime defense in depth. Startup/test inventory validation should make
+        # this unreachable for registered application routes, but a future route
+        # must never become public merely because its policy entry was forgotten.
+        return _blocked_unclassified_mutation(method, path)
+
+    if classification == MutationClass.CALCULATION_ONLY:
         return await call_next(request)
 
     error = _authorize_token(request.headers.get("authorization"))
     if error is not None:
         status_code, detail = error
         headers = {"WWW-Authenticate": "Bearer"} if status_code == 401 else None
-        return JSONResponse(status_code=status_code, content={"detail": detail}, headers=headers)
+        return JSONResponse(
+            status_code=status_code,
+            content={"detail": detail},
+            headers=headers,
+        )
 
     # Jupiter has its own independent feature gate because the current adapter is
     # a prototype spot-swap path, not the hardened perp-style ExecutionRouter.
-    if method == "POST" and path == "/api/execution/jupiter/swap" and not config.ENABLE_DIRECT_JUPITER_SWAP:
+    if (
+        method == "POST"
+        and path == "/api/execution/jupiter/swap"
+        and not config.ENABLE_DIRECT_JUPITER_SWAP
+    ):
         return JSONResponse(
             status_code=403,
             content={
