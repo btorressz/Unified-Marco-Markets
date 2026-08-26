@@ -1,4 +1,7 @@
 import logging
+import csv
+import io
+import zipfile
 from datetime import datetime, timezone
 
 import httpx
@@ -9,14 +12,53 @@ from backend.core.event_bus import EventBus, EventType
 from backend.core.state_store import StateStore
 from backend.data.repositories.ingest_repo import IngestRepository
 from backend.ingest.quality import observation_quality
-from backend.compute.geopolitical_evidence import evidence_id, normalize_evidence_document
+from backend.compute.geopolitical_evidence import evidence_id, normalize_evidence_document, normalize_research_event
+from backend.data.repositories.research_event_repo import ResearchEventRepository
 
 logger = logging.getLogger(__name__)
 
 GDELT_DOC_API = "https://api.gdeltproject.org/api/v2/doc/doc"
 SHOCK_THRESHOLD = 5.0
 GDELT_SOURCE_ID = "gdelt_macro_news"
+GDELT_EVENTS_SOURCE_ID = "gdelt_events"
+GDELT_LAST_UPDATE = "https://data.gdeltproject.org/gdeltv2/lastupdate.txt"
 MAX_EVIDENCE_DOCUMENTS = 20
+MAX_EVENT_RECORDS = 250
+
+
+def _gdelt_timestamp(value: object) -> str | None:
+    """Normalize GDELT's DATEADDED (YYYYMMDDHHMMSS) without inventing precision."""
+    raw = str(value or "").strip()
+    try:
+        return datetime.strptime(raw, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).isoformat()
+    except ValueError:
+        return None
+
+
+def normalize_gdelt_event(record: dict) -> dict | None:
+    """Normalize one GDELT 2 Event row as observed, non-authoritative research data."""
+    event_id = str(record.get("GLOBALEVENTID") or "").strip()
+    added_at = _gdelt_timestamp(record.get("DATEADDED"))
+    if not event_id or not added_at:
+        return None
+    payload = {key: record.get(key) for key in (
+        "SQLDATE", "Actor1Code", "Actor1Name", "Actor1CountryCode", "Actor2Code", "Actor2Name",
+        "Actor2CountryCode", "EventCode", "EventBaseCode", "EventRootCode", "QuadClass",
+        "GoldsteinScale", "NumMentions", "NumSources", "NumArticles", "AvgTone",
+        "ActionGeo_FullName", "ActionGeo_CountryCode", "ActionGeo_Lat", "ActionGeo_Long", "SOURCEURL",
+    )}
+    event_code = str(record.get("EventCode") or "UNKNOWN").strip()
+    return normalize_research_event(
+        event_family="conflict_diplomatic_political", event_type=f"GDELT_CAMEO_{event_code}",
+        source="GDELT Events", source_id=GDELT_EVENTS_SOURCE_ID, source_record_id=event_id,
+        source_record_type="media_coded_event", claim_type="observed_evidence",
+        event_timestamp=added_at, event_time_basis="provider_added_at", published_at=added_at,
+        provider_updated_at=added_at, retrieved_at=None, observed=True, authoritative=False,
+        proxy=False, synthetic=False, study_eligible=True, evidence_contract_version=1,
+        transformation="gdelt_v2_event_normalization", transformation_version="1", payload=payload,
+        evidence={"authority": "non_authoritative", "coding_system": "CAMEO", "source_url": record.get("SOURCEURL")},
+        lineage={"provider": "GDELT 2 Events", "provider_record_id": event_id},
+    )
 
 
 class GDELTIngestor:
@@ -26,11 +68,50 @@ class GDELTIngestor:
         event_bus: EventBus | None = None,
         state_store: StateStore | None = None,
         ingest_repo: IngestRepository | None = None,
+        research_event_repo: ResearchEventRepository | None = None,
     ):
         self.event_bus = event_bus or EventBus()
         self.state_store = state_store or StateStore()
         self.ingest_repo = ingest_repo or IngestRepository()
+        self.research_event_repo = research_event_repo or ResearchEventRepository()
         self._last_shock_score: float = 0.0
+
+    async def fetch_events(self, run_context=None) -> list[dict]:
+        """Fetch the latest bounded GDELT 2 export and durably retain study events."""
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                manifest = await client.get(GDELT_LAST_UPDATE)
+                manifest.raise_for_status()
+                export_url = next(line.split()[2] for line in manifest.text.splitlines() if line.endswith(".export.CSV.zip"))
+                response = await client.get(export_url)
+                response.raise_for_status()
+            with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                raw = archive.read(archive.namelist()[0]).decode("utf-8", errors="replace")
+            rows = []
+            for values in csv.reader(io.StringIO(raw), delimiter="\t"):
+                if len(values) < 58:
+                    continue
+                rows.append(dict(zip((
+                    "GLOBALEVENTID","SQLDATE","MonthYear","Year","FractionDate","Actor1Code","Actor1Name","Actor1CountryCode","Actor1KnownGroupCode","Actor1EthnicCode","Actor1Religion1Code","Actor1Religion2Code","Actor1Type1Code","Actor1Type2Code","Actor1Type3Code","Actor2Code","Actor2Name","Actor2CountryCode","Actor2KnownGroupCode","Actor2EthnicCode","Actor2Religion1Code","Actor2Religion2Code","Actor2Type1Code","Actor2Type2Code","Actor2Type3Code","IsRootEvent","EventCode","EventBaseCode","EventRootCode","QuadClass","GoldsteinScale","NumMentions","NumSources","NumArticles","AvgTone","Actor1Geo_Type","Actor1Geo_FullName","Actor1Geo_CountryCode","Actor1Geo_ADM1Code","Actor1Geo_Lat","Actor1Geo_Long","Actor1Geo_FeatureID","Actor2Geo_Type","Actor2Geo_FullName","Actor2Geo_CountryCode","Actor2Geo_ADM1Code","Actor2Geo_Lat","Actor2Geo_Long","Actor2Geo_FeatureID","ActionGeo_Type","ActionGeo_FullName","ActionGeo_CountryCode","ActionGeo_ADM1Code","ActionGeo_Lat","ActionGeo_Long","ActionGeo_FeatureID","DATEADDED","SOURCEURL"), values)))
+                if len(rows) >= MAX_EVENT_RECORDS:
+                    break
+            return self.process_events(rows, run_context=run_context)
+        except Exception as exc:
+            if run_context: run_context.mark_failure(exc)
+            logger.warning("GDELT Events export failed", exc_info=True)
+            return []
+
+    def process_events(self, records: list[dict], *, run_context=None) -> list[dict]:
+        events = [event for row in records[:MAX_EVENT_RECORDS] if (event := normalize_gdelt_event(row))]
+        persisted = 0
+        if run_context: run_context.record_received(len(records))
+        for event in events:
+            if self.research_event_repo.insert_event_idempotent(event):
+                persisted += 1
+        if run_context:
+            run_context.record_persisted(persisted)
+            run_context.mark_success()
+        return events
 
     async def fetch_articles(
         self,
