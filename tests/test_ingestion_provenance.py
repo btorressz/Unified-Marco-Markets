@@ -25,6 +25,7 @@ def test_registry_has_stable_source_contracts():
         "drift_funding_sol_perp",
         "wits_tariffs",
         "gdelt_macro_news",
+        "gdelt_events",
         "ofac_sanctions",
         "wto_trade",
         "basis_materializer_v1",

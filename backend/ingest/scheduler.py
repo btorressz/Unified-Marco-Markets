@@ -56,6 +56,7 @@ class IngestScheduler:
     def schedule_all(self) -> None:
         self.scheduler.add_job(self._run_wits, "interval", hours=6, id="wits_ingest", name="WITS Tariff Ingest", replace_existing=True)
         self.scheduler.add_job(self._run_gdelt, "interval", minutes=5, id="gdelt_ingest", name="GDELT News Ingest", replace_existing=True)
+        self.scheduler.add_job(self._run_gdelt_events, "interval", minutes=15, id="gdelt_events_ingest", name="GDELT Events Ingest", replace_existing=True)
         self.scheduler.add_job(self._run_ofac, "interval", hours=6, id="ofac_ingest", name="OFAC Sanctions Ingest", replace_existing=True)
         self.scheduler.add_job(self._run_wto, "interval", hours=24, id="wto_ingest", name="WTO Trade Ingest", replace_existing=True)
         self.scheduler.add_job(self._run_kraken, "interval", seconds=30, id="kraken_ingest", name="Kraken Price Ingest", replace_existing=True)
@@ -148,6 +149,12 @@ class IngestScheduler:
                 logger.debug("GDELT ingest completed")
         except Exception:
             logger.error("GDELT ingest job failed", exc_info=True)
+
+    async def _run_gdelt_events(self) -> None:
+        try:
+            await self._run_source("gdelt_events", "gdelt_events", lambda context: self.gdelt.fetch_events(run_context=context))
+        except Exception:
+            logger.error("GDELT Events ingest job failed", exc_info=True)
 
     async def _run_ofac(self) -> None:
         try:
