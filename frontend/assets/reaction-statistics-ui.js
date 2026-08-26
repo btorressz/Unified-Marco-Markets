@@ -120,3 +120,7 @@
 
   window.ReactionStatisticsUI = { render };
 }());
+
+import('/frontend/assets/price-integrity-ui.js').catch(error => {
+  console.warn('[PriceIntegrityUI] diagnostics module unavailable:', error);
+});
