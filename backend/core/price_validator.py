@@ -37,8 +37,7 @@ def _parse_timestamp(value: Any) -> datetime | None:
 
 
 def _deviation_bps(left: float, right: float) -> float:
-    midpoint = median((left, right))
-    return abs(left - right) / midpoint * 10_000.0 if midpoint > 0 else 0.0
+    return abs(left - right) / right * 10_000.0 if right > 0 else 0.0
 
 
 class PriceValidator:
@@ -251,7 +250,7 @@ class PriceValidator:
                     research_corroboration["deviation_bps"][
                         f"{source}_vs_{reference_name}"
                     ] = round(dev, 2)
-                research_corroboration["aligned"] = all(
+                research_corroborroboration["aligned"] = all(
                     value <= self.deviation_threshold_bps
                     for value in research_corroboration["deviation_bps"].values()
                 )
