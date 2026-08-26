@@ -1224,6 +1224,12 @@ details { margin-top:8px; } details summary { cursor:pointer;color:var(--text-se
 .multi-event-validation { border-top:3px solid var(--accent-blue); }
 .reaction-study-controls { display:flex; flex-wrap:wrap; gap:16px; padding:12px 0; color:var(--text-muted); }
 .multi-event-validation details { margin-top:10px; padding:10px; border:1px solid var(--border); border-radius:6px; }
+.research-stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(135px,1fr)); gap:8px; margin:10px 0; }
+.research-stat { min-width:0; padding:8px; border:1px solid var(--border-color); border-radius:5px; background:var(--bg-secondary); overflow-wrap:anywhere; }
+.research-stat small { display:block; color:var(--text-muted); text-transform:uppercase; font-size:9px; }
+.research-subgroup-meta { display:flex; align-items:center; gap:8px; margin:8px 0; }
+.sample-funnel { padding:10px; margin:8px 0; border-left:3px solid var(--accent-blue); color:var(--text-secondary); line-height:1.8; overflow-wrap:anywhere; }
+.strata-kind>summary { font-weight:700; letter-spacing:.06em; }
 .reaction-v2 { margin-top: 18px; }
 .reaction-v2 h3 { letter-spacing: .08em; font-size: 12px; }
 .reaction-v2 small { display:block; color:var(--text-muted); }
