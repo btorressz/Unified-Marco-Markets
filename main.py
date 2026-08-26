@@ -13,6 +13,7 @@ def create_app():
     from fastapi.staticfiles import StaticFiles
     from fastapi.responses import HTMLResponse
     from backend.core.operator_auth import enforce_operator_request
+    from backend.core.mutation_policy import validate_mutation_route_inventory
 
     @asynccontextmanager
     async def lifespan(application):
@@ -151,6 +152,14 @@ def create_app():
     app.include_router(geopolitical_router)
     app.include_router(protection_router)
     app.include_router(decision_router)
+
+    mutation_inventory = validate_mutation_route_inventory(app)
+    logger.info(
+        "Mutation authorization inventory validated: %s routes (%s external, %s calculation-only)",
+        mutation_inventory["mutation_route_count"],
+        mutation_inventory["external_state_mutation_count"],
+        mutation_inventory["calculation_only_count"],
+    )
 
     @app.get("/", response_class=HTMLResponse)
     def root():
